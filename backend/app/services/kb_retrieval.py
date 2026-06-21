@@ -7,6 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.models import Destination, KbArticle, KbCategory, Route, Service, Station, Trip
+from app.utils.text_utils import normalize_arabic
 
 TRIP_KEYWORDS = {
     "رحلة", "موعد", "مقعد", "trip", "seat", "schedule", "next", "available", "مواعيد", "التالي", "رحلات",
@@ -240,20 +241,25 @@ def _mentions_destination(query: str) -> bool:
     return any(ar in query for names in DESTINATION_ALIASES.values() for ar in names)
 
 
+TRAVEL_INTENT_HINTS = (
+    "schedule", "trip", "price", "seat", "next", "travel", "go to", "going to",
+    "from", "to ", "tomorrow", "today",
+    "مواعيد", "رحلة", "رحلات", "سعر", "مقعد", "اسافر", "أسافر", "اروح", "أروح",
+    "رايح", "ذاهب", "بكرة", "بكره", "غدا", "النهاردة", "من", "الى", "إلى",
+)
+
+
 def _should_include_trips(query: str, search_terms: list[str]) -> bool:
     if _mentions_booking(query) and not _mentions_trips(query):
         return False
     if _mentions_trips(query):
         return True
+    # A named destination combined with any travel-intent phrasing → show trips.
     if _mentions_destination(query) and any(
-        hint in query.lower() for hint in ("schedule", "trip", "price", "seat", "next", "مواعيد", "رحلة", "سعر", "مقعد")
+        hint in query.lower() for hint in TRAVEL_INTENT_HINTS
     ):
         return True
-    return any(
-        route_hint in t
-        for t in search_terms
-        for route_hint in ("دهب", "الإسكندرية", "مرسى علم", "الغردقة", "شرم")
-    ) and _mentions_trips(query)
+    return False
 
 
 def _trip_route_terms(search_terms: list[str]) -> list[str]:
@@ -265,36 +271,65 @@ def _trip_route_terms(search_terms: list[str]) -> list[str]:
     return route_terms[:6]
 
 
-def _fetch_trip_blocks(db: Session, search_terms: list[str], *, limit: int = 8) -> list[str]:
+def _resolve_route_ids(db: Session, query_text: str, search_terms: list[str]) -> list[int]:
+    """Find route IDs whose origin/destination is mentioned in the query.
+
+    Matching is done in Python with Arabic normalization so that spelling
+    variants (e.g. الاسكندرية vs الإسكندرية) still match, which exact SQL LIKE
+    cannot do. Routes where BOTH endpoints are mentioned are preferred.
+    """
     route_terms = _trip_route_terms(search_terms)
     if not route_terms:
         return []
 
-    trip_filters = []
-    for term in route_terms:
-        p = _like_pattern(term)
-        trip_filters.append(Route.origin.like(p))
-        trip_filters.append(Route.destination.like(p))
+    # Normalized haystack of the question plus all expanded terms (which include
+    # Arabic translations of English city names from the alias maps).
+    norm_terms = [normalize_arabic(t) for t in route_terms if t]
+    haystack = normalize_arabic(query_text + " " + " ".join(route_terms))
 
-    query = (
+    def _endpoint_mentioned(endpoint: str) -> bool:
+        norm_ep = normalize_arabic(endpoint)
+        if not norm_ep:
+            return False
+        if norm_ep in haystack:
+            return True
+        # Handle short mentions of multi-word endpoints (e.g. "شرم" → "شرم الشيخ").
+        # Match whole words only, so prepositions like "الى" don't substring-match
+        # inside an endpoint word such as "الشمالى".
+        ep_words = set(norm_ep.split())
+        return any(len(nt) >= 3 and nt in ep_words for nt in norm_terms)
+
+    both_ids: list[int] = []
+    single_ids: list[int] = []
+    for route in db.query(Route).filter(Route.is_active.is_(True)).all():
+        origin_hit = _endpoint_mentioned(route.origin)
+        dest_hit = _endpoint_mentioned(route.destination)
+        if origin_hit and dest_hit:
+            both_ids.append(route.id)
+        elif origin_hit or dest_hit:
+            single_ids.append(route.id)
+
+    # Prefer fully-specified routes (origin + destination both named).
+    return both_ids or single_ids
+
+
+def _fetch_trip_blocks(db: Session, query_text: str, search_terms: list[str], *, limit: int = 8) -> list[str]:
+    route_ids = _resolve_route_ids(db, query_text, search_terms)
+    if not route_ids:
+        return []
+
+    trips = (
         db.query(Trip)
         .join(Route)
         .options(joinedload(Trip.route))
         .filter(Route.is_active.is_(True))
+        .filter(Trip.route_id.in_(route_ids))
         .filter(Trip.trip_date >= date.today())
         .filter(Trip.status.in_(["open", "full"]))
-        .filter(or_(*trip_filters))
         .order_by(Trip.trip_date, Trip.departure_time)
+        .limit(limit)
+        .all()
     )
-
-    origin_terms = [t for t in route_terms if "قاهرة" in t or t.lower() == "cairo"]
-    dest_terms = [t for t in route_terms if t not in origin_terms]
-    if origin_terms and dest_terms:
-        origin_filters = [Route.origin.like(_like_pattern(t)) for t in origin_terms]
-        dest_filters = [Route.destination.like(_like_pattern(t)) for t in dest_terms]
-        query = query.filter(or_(*origin_filters)).filter(or_(*dest_filters))
-
-    trips = query.limit(limit).all()
     blocks: list[str] = []
     for trip in trips:
         if not trip.route:
@@ -500,7 +535,7 @@ def retrieve_context(db: Session, query: str, limit: int = 10) -> str:
         if content_type not in intents:
             continue
         if content_type == "trips":
-            groups.append(_fetch_trip_blocks(db, search_terms))
+            groups.append(_fetch_trip_blocks(db, q, search_terms))
         elif content_type == "stations":
             groups.append(_fetch_station_blocks(db, q, search_terms))
         elif content_type == "destinations":

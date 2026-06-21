@@ -1,5 +1,39 @@
 import re
 
+# Arabic letter-form unification for fuzzy matching.
+# Users frequently type alef/ya/ta-marbuta variants that differ from the
+# canonical spelling stored in the DB (e.g. الاسكندرية vs الإسكندرية),
+# which breaks exact SQL LIKE matching. Normalizing both sides fixes that.
+_ARABIC_DIACRITICS_RE = re.compile(r"[ؐ-ًؚ-ٰٟۖ-ۭـ]")
+_ARABIC_CHAR_MAP = str.maketrans(
+    {
+        "أ": "ا",
+        "إ": "ا",
+        "آ": "ا",
+        "ٱ": "ا",
+        "ى": "ي",
+        "ئ": "ي",
+        "ؤ": "و",
+        "ة": "ه",
+        "گ": "ك",
+        "ﻷ": "لا",
+    }
+)
+
+
+def normalize_arabic(text: str | None) -> str:
+    """Normalize Arabic text for fuzzy/substring matching.
+
+    Removes diacritics and tatweel, unifies alef/ya/ta-marbuta/hamza forms,
+    lowercases latin characters, and collapses whitespace.
+    """
+    if not text:
+        return ""
+    text = _ARABIC_DIACRITICS_RE.sub("", text)
+    text = text.translate(_ARABIC_CHAR_MAP)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().lower()
+
 
 def slugify(text: str) -> str:
     text = text.strip().lower()
