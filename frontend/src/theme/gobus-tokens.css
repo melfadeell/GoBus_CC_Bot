@@ -1,0 +1,37 @@
+:root {
+  --color-brand-primary: #112347;
+  --color-brand-primary-hover: #0d1a35;
+  --color-brand-accent: #F7941D;
+  --color-accent-soft: #FEF3E2;
+
+  --color-text-default: #112347;
+  --color-text-muted: #64748b;
+  --color-text-subtle: #94a3b8;
+  --color-text-inverse: #ffffff;
+
+  --color-surface-canvas: #f4f6f9;
+  --color-surface-default: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-border-default: #e2e8f0;
+
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --shadow-sm: 0 1px 2px rgba(17, 35, 71, 0.06), 0 8px 20px rgba(17, 35, 71, 0.05);
+
+  --font-family-sans: 'Cairo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.5rem;
+
+  --transition-fast: 120ms ease;
+}

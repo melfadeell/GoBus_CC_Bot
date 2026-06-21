@@ -1,0 +1,31 @@
+# Environment
+backend/.env
+frontend/.env
+*.env
+!.env.example
+
+# Reference / local only
+Canvas_Repo/
+.cursor/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+backend/uploads/
+
+# Node
+node_modules/
+dist/
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
