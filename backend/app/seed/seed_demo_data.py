@@ -94,9 +94,15 @@ DEPARTURE_SLOTS = [
 ]
 
 
-def _generate_trips_for_route(db: Session, route: Route, classes: list[str], days: int = 14) -> None:
-    """Generate trips for a route if it has none."""
-    if db.query(Trip).filter(Trip.route_id == route.id).count() > 0:
+def _generate_trips_for_route(
+    db: Session, route: Route, classes: list[str], days: int = 14, *, force: bool = False
+) -> None:
+    """Generate trips for a route.
+
+    By default this is a no-op if the route already has trips. Pass force=True
+    to (re)generate regardless — callers must clear existing trips first.
+    """
+    if not force and db.query(Trip).filter(Trip.route_id == route.id).count() > 0:
         return
 
     today = date.today()
@@ -153,6 +159,36 @@ def ensure_extra_routes_and_trips(db: Session, base_config: list, extra_config: 
             db.flush()
         _generate_trips_for_route(db, route, classes)
     db.commit()
+
+
+def regenerate_all_trips(db: Session, days: int = 14) -> int:
+    """Delete all existing trips and regenerate a fresh window from today.
+
+    Use this to recover when the originally seeded trip window has expired
+    (all trips in the past), which makes trip queries return nothing. Bus
+    classes are taken from the known route configs, defaulting to
+    ["standard", "elite"] for any route not in the configs.
+
+    Returns the number of trips created.
+    """
+    # Lazy import to avoid a circular import (seed_website_data imports this module).
+    from app.seed.seed_website_data import ROUTE_CONFIG
+
+    class_map = {
+        (origin, destination): classes
+        for origin, destination, _dur, _dist, classes, _ in list(ROUTE_CONFIG) + list(EXTRA_ROUTE_CONFIG)
+    }
+
+    db.query(Trip).delete(synchronize_session=False)
+    db.flush()
+
+    routes = db.query(Route).filter(Route.is_active.is_(True)).all()
+    for route in routes:
+        classes = class_map.get((route.origin, route.destination), ["standard", "elite"])
+        _generate_trips_for_route(db, route, classes, days=days, force=True)
+
+    db.commit()
+    return db.query(Trip).count()
 
 
 def seed_demo_kb_articles(db: Session, categories: dict[str, KbCategory]) -> None:

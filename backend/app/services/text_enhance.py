@@ -1,7 +1,8 @@
 import logging
 
 from fastapi import HTTPException
-from openai import AsyncOpenAI, OpenAIError
+from openai import OpenAIError
+from app.services.openai_client import get_openai_client
 
 from app.config import get_settings
 
@@ -22,7 +23,7 @@ async def enhance_text(text: str) -> str:
     if not settings.openai_api_key:
         raise HTTPException(status_code=503, detail="خدمة الذكاء الاصطناعي غير متوفرة")
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = get_openai_client()
     try:
         response = await client.chat.completions.create(
             model=settings.openai_model,

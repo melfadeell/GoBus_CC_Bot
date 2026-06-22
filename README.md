@@ -1,4 +1,4 @@
-# GoBus Omnichannel Chatbot POC
+# GoBus Omnichannel Chatbot
 
 React + FastAPI + MySQL chatbot for GoBus customer service with streaming GPT-4o, editable knowledge base, stations, destinations, and dummy trip data.
 

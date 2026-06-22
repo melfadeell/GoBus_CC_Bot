@@ -61,7 +61,7 @@ export default function AdminLayout() {
         {showLabels && (
           <div className="min-w-0 flex-1">
             <div className="font-bold text-sm truncate">GoBus Admin</div>
-            <div className="text-xs opacity-75 truncate">{t.nav.adminSubtitle}</div>
+            <div className="text-xs opacity-75 whitespace-normal leading-tight">{t.nav.adminSubtitle}</div>
           </div>
         )}
         <button

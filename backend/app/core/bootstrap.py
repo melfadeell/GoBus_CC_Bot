@@ -4,6 +4,7 @@ import logging
 from urllib.parse import unquote
 
 import pymysql
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
@@ -65,20 +66,35 @@ def bootstrap_logs_database() -> None:
 
 def bootstrap_database() -> None:
     """
-    Startup hook:
+    Startup hook (safe with multiple workers — guarded by a MySQL advisory lock so
+    only one worker runs DDL/migrations/seed; the others wait then no-op):
     1. Create MySQL databases if missing
-    2. Create all tables
+    2. Create all tables + run migrations
     3. Seed website data on first run only
     """
-    from app.seed.seed_website_data import seed_initial_data
-
     ensure_mysql_database(settings.database_url)
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables are ready")
-
     bootstrap_logs_database()
 
+    # Serialize schema/seed work across workers with GET_LOCK.
+    with engine.connect() as conn:
+        got = conn.execute(
+            text("SELECT GET_LOCK('gobus_bootstrap', 30)")
+        ).scalar()
+        if got != 1:
+            logger.warning("Could not acquire bootstrap lock; skipping (another worker is handling it)")
+            return
+        try:
+            _run_bootstrap_steps()
+        finally:
+            conn.execute(text("SELECT RELEASE_LOCK('gobus_bootstrap')"))
+
+
+def _run_bootstrap_steps() -> None:
     from app.core.migrations import run_migrations
+    from app.seed.seed_website_data import seed_initial_data
+
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables are ready")
 
     run_migrations(engine)
 
@@ -87,7 +103,6 @@ def bootstrap_database() -> None:
         if is_database_seeded(db):
             logger.info("Database already seeded — skipping initial import")
             return
-
         logger.info("First run detected — seeding initial data...")
         seed_initial_data(db)
         logger.info("Initial seed completed successfully")

@@ -60,16 +60,20 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  getStats: (params?: { channel?: string }) => {
+  getStats: (params?: { channel?: string; date_from?: string; date_to?: string }) => {
     const q = new URLSearchParams()
     if (params?.channel) q.set('channel', params.channel)
+    if (params?.date_from) q.set('date_from', params.date_from)
+    if (params?.date_to) q.set('date_to', params.date_to)
     const qs = q.toString()
     return request<DashboardStats>(`/api/dashboard/stats${qs ? `?${qs}` : ''}`)
   },
-  getAnalytics: (params?: { channel?: string; days?: number }) => {
+  getAnalytics: (params?: { channel?: string; days?: number; date_from?: string; date_to?: string }) => {
     const q = new URLSearchParams()
     if (params?.channel) q.set('channel', params.channel)
     if (params?.days) q.set('days', String(params.days))
+    if (params?.date_from) q.set('date_from', params.date_from)
+    if (params?.date_to) q.set('date_to', params.date_to)
     const qs = q.toString()
     return request<DashboardAnalytics>(`/api/dashboard/analytics${qs ? `?${qs}` : ''}`)
   },
@@ -156,15 +160,19 @@ export const api = {
   getConversationMessages: (sessionId: string) =>
     request<ChatMessage[]>(`/api/conversations/${sessionId}/messages`),
 
-  getMetricsOverview: (params?: { days?: number }) => {
+  getMetricsOverview: (params?: { days?: number; date_from?: string; date_to?: string }) => {
     const q = new URLSearchParams()
     if (params?.days) q.set('days', String(params.days))
+    if (params?.date_from) q.set('date_from', params.date_from)
+    if (params?.date_to) q.set('date_to', params.date_to)
     const qs = q.toString()
     return request<MetricsOverview>(`/api/metrics/overview${qs ? `?${qs}` : ''}`)
   },
-  getMetricsCharts: (params?: { days?: number }) => {
+  getMetricsCharts: (params?: { days?: number; date_from?: string; date_to?: string }) => {
     const q = new URLSearchParams()
     if (params?.days) q.set('days', String(params.days))
+    if (params?.date_from) q.set('date_from', params.date_from)
+    if (params?.date_to) q.set('date_to', params.date_to)
     const qs = q.toString()
     return request<MetricsCharts>(`/api/metrics/charts${qs ? `?${qs}` : ''}`)
   },
@@ -191,6 +199,9 @@ export interface DashboardStats {
   total_sessions: number
   total_messages: number
   total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_cost_usd: number
   kb_articles: number
   stations: number
   destinations: number
@@ -202,12 +213,17 @@ export interface ChannelTokenStat {
   sessions: number
   messages: number
   total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
 }
 
 export interface DailyAnalyticsPoint {
   date: string
   messages: number
   tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: number
 }
 
 export interface DashboardAnalytics {

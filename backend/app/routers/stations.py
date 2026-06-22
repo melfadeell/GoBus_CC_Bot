@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_admin
+from app.services import reference_cache
 from app.database import get_db
 from app.models.models import AdminUser, Station
 from app.schemas.schemas import PaginatedResponse, StationCreate, StationOut, StationUpdate
@@ -40,6 +41,7 @@ def create_station(
     station = Station(**payload.model_dump())
     db.add(station)
     db.commit()
+    reference_cache.invalidate()
     db.refresh(station)
     return station
 
@@ -57,6 +59,7 @@ def update_station(
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(station, key, value)
     db.commit()
+    reference_cache.invalidate()
     db.refresh(station)
     return station
 
@@ -70,4 +73,5 @@ def delete_station(
         raise HTTPException(status_code=404, detail="Station not found")
     db.delete(station)
     db.commit()
+    reference_cache.invalidate()
     return {"ok": True}

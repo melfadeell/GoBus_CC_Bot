@@ -1,9 +1,13 @@
+import re
 import uuid
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 
 from app.services.ocr_service import ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES
+
+# Filenames we generate are 32 hex chars + a known extension; reject anything else.
+_VALID_ATTACHMENT_RE = re.compile(r"^[a-f0-9]{32}\.(jpg|png|webp|gif)$")
 
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads" / "chat"
 EXT_BY_MIME = {
@@ -38,9 +42,14 @@ async def save_chat_image(file: UploadFile) -> str:
 
 
 def resolve_attachment_path(filename: str) -> Path:
-    if ".." in filename or "/" in filename or "\\" in filename:
+    # Whitelist the exact filename shape, then verify the resolved path stays
+    # inside the upload dir (defends against traversal incl. Windows quirks).
+    if not _VALID_ATTACHMENT_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    path = ensure_upload_dir() / filename
+    base = ensure_upload_dir().resolve()
+    path = (base / filename).resolve()
+    if not path.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment not found")
     return path

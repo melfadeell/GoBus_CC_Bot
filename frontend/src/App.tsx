@@ -1,6 +1,7 @@
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { getToken } from '@/api/client'
 import AdminLayout from '@/components/layout/AdminLayout'
+import ErrorBoundary from '@/components/ErrorBoundary'
 import { LanguageProvider } from '@/i18n/LanguageProvider'
 import LoginPage from '@/pages/Login'
 import DashboardPage from '@/pages/Dashboard'
@@ -38,6 +39,7 @@ function ChatLanguageShell() {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <Routes>
       <Route element={<ChatLanguageShell />}>
         <Route path="/chat" element={<PublicChatPage />} />
@@ -66,7 +68,8 @@ export default function App() {
         </Route>
       </Route>
 
-      <Route path="*" element={<Navigate to="/chat" replace />} />
+      <Route path="*" element={<Navigate to="/admin" replace />} />
     </Routes>
+    </ErrorBoundary>
   )
 }

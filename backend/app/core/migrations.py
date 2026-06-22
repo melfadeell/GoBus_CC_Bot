@@ -21,6 +21,39 @@ def _column_exists(engine: Engine, table: str, column: str) -> bool:
     return column in {c["name"] for c in insp.get_columns(table)}
 
 
+def _index_exists(engine: Engine, table: str, index: str) -> bool:
+    insp = inspect(engine)
+    try:
+        return index in {ix["name"] for ix in insp.get_indexes(table)}
+    except Exception:
+        return False
+
+
+# Indexes on hot, frequently-filtered columns (added idempotently).
+_INDEXES: list[tuple[str, str, str]] = [
+    ("chat_messages", "ix_chat_messages_session_created", "(session_id, created_at)"),
+    ("trips", "ix_trips_route_date_status", "(route_id, trip_date, status)"),
+    ("routes", "ix_routes_is_active", "(is_active)"),
+    ("stations", "ix_stations_is_active", "(is_active)"),
+    ("destinations", "ix_destinations_is_active", "(is_active)"),
+    ("services", "ix_services_is_active", "(is_active)"),
+]
+
+
+def _migrate_indexes(engine: Engine) -> None:
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table, name, cols in _INDEXES:
+            if table not in existing_tables or _index_exists(engine, table, name):
+                continue
+            try:
+                conn.execute(text(f"CREATE INDEX {name} ON {table} {cols}"))
+                logger.info("Created index %s on %s", name, table)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not create index %s on %s: %s", name, table, exc)
+
+
 def run_migrations(engine: Engine) -> None:
     with engine.begin() as conn:
         if not _column_exists(engine, "stations", "is_24_hours"):
@@ -47,6 +80,7 @@ def run_migrations(engine: Engine) -> None:
     _migrate_general_inquiry_prompt(engine)
     _migrate_chat_image_url(engine)
     _migrate_chat_tokens_and_channels(engine)
+    _migrate_indexes(engine)
 
 
 def _migrate_chat_tokens_and_channels(engine: Engine) -> None:

@@ -1,8 +1,36 @@
 import { useCallback, useRef, useState } from 'react'
 
+export interface StationCardData {
+  name: string
+  address: string
+  working_hours: string
+  map_url: string
+  city: string
+}
+
+export interface TripRow {
+  origin: string
+  destination: string
+  date: string
+  departure: string
+  arrival: string
+  bus_class: string
+  available_seats: number
+  total_seats: number
+  price_egp: number
+  bookable: boolean
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void
   onSession?: (sessionId: string) => void
+  onMeta?: (meta: {
+    sql?: string
+    ttft_ms?: number
+    stations?: StationCardData[]
+    destinations?: string[]
+    trips?: TripRow[]
+  }) => void
   onDone?: () => void
   onError?: (error: string) => void
 }
@@ -111,6 +139,21 @@ export function useChatStream() {
       abortRef.current = controller
       setIsStreaming(true)
 
+      // Inactivity watchdog: abort if no data arrives for a while (hung request).
+      const TIMEOUT_MS = 45000
+      let timedOut = false
+      let watchdog = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, TIMEOUT_MS)
+      const resetWatchdog = () => {
+        clearTimeout(watchdog)
+        watchdog = setTimeout(() => {
+          timedOut = true
+          controller.abort()
+        }, TIMEOUT_MS)
+      }
+
       try {
         const body: Record<string, string | null | undefined> = {
           message,
@@ -144,18 +187,30 @@ export function useChatStream() {
         const decoder = new TextDecoder()
 
         const parser = createSseParser((event, data) => {
-          let payload: Record<string, string>
+          let payload: Record<string, unknown>
           try {
             payload = JSON.parse(data)
           } catch {
             return
           }
-          if (event === 'session' && payload.session_id) {
+          if (event === 'session' && typeof payload.session_id === 'string') {
             callbacks.onSession?.(payload.session_id)
           } else if (event === 'token' && typeof payload.content === 'string') {
             callbacks.onToken(payload.content)
+          } else if (event === 'meta') {
+            callbacks.onMeta?.({
+              sql: typeof payload.sql === 'string' ? payload.sql : undefined,
+              ttft_ms: typeof payload.ttft_ms === 'number' ? payload.ttft_ms : undefined,
+              stations: Array.isArray(payload.stations)
+                ? (payload.stations as StationCardData[])
+                : undefined,
+              destinations: Array.isArray(payload.destinations)
+                ? (payload.destinations as string[])
+                : undefined,
+              trips: Array.isArray(payload.trips) ? (payload.trips as TripRow[]) : undefined,
+            })
           } else if (event === 'error') {
-            callbacks.onError?.(payload.error || 'Error')
+            callbacks.onError?.(typeof payload.error === 'string' ? payload.error : 'Error')
           } else if (event === 'done') {
             callbacks.onDone?.()
           }
@@ -164,14 +219,18 @@ export function useChatStream() {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
+          resetWatchdog()
           parser.feed(decoder.decode(value, { stream: true }))
         }
         parser.finish()
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') {
+        if (timedOut) {
+          callbacks.onError?.('The request timed out. Please try again.')
+        } else if ((err as Error).name !== 'AbortError') {
           callbacks.onError?.((err as Error).message || 'Unexpected error')
         }
       } finally {
+        clearTimeout(watchdog)
         setIsStreaming(false)
       }
     },

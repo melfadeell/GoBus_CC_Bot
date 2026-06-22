@@ -33,11 +33,23 @@ function truncate(value: string | null | undefined, max = 80) {
   return value.length <= max ? value : `${value.slice(0, max)}…`
 }
 
+const PAGE_SIZE = 50
+
+function isoDaysAgo(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d.toISOString().slice(0, 10)
+}
+
 export default function MetricsPage() {
   const { t } = useLanguage()
   const m = t.metrics
   const [tab, setTab] = useState<TabId>('overview')
   const [days, setDays] = useState(30)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
   const [overview, setOverview] = useState<MetricsOverview | null>(null)
   const [charts, setCharts] = useState<MetricsCharts | null>(null)
   const [requests, setRequests] = useState<ApiRequestLog[]>([])
@@ -48,13 +60,23 @@ export default function MetricsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Effective date window: explicit range wins, else derived from the day preset.
+  const effFrom = dateFrom || isoDaysAgo(days - 1)
+  const effTo = dateTo || isoDaysAgo(0)
+
+  // Reset to first page whenever the filter or tab changes.
+  useEffect(() => {
+    setPage(1)
+  }, [tab, days, dateFrom, dateTo])
+
   const load = useCallback(() => {
     setLoading(true)
     setError(null)
-    const params = { days: String(days), page: '1', page_size: '50' }
+    const dateParams = { date_from: effFrom, date_to: effTo }
+    const pageParams = { ...dateParams, page: String(page), page_size: String(PAGE_SIZE) }
 
     if (tab === 'overview') {
-      Promise.all([api.getMetricsOverview({ days }), api.getMetricsCharts({ days })])
+      Promise.all([api.getMetricsOverview(dateParams), api.getMetricsCharts(dateParams)])
         .then(([o, c]) => {
           setOverview(o)
           setCharts(c)
@@ -66,21 +88,23 @@ export default function MetricsPage() {
 
     const fetchers: Record<Exclude<TabId, 'overview'>, () => Promise<void>> = {
       requests: () =>
-        api.getMetricsRequests(params).then((r) => setRequests(r.items)),
-      chat: () => api.getMetricsChatLogs(params).then((r) => setChatLogs(r.items)),
-      llm: () => api.getMetricsLlmCalls(params).then((r) => setLlmCalls(r.items)),
-      auth: () => api.getMetricsAuthLogs(params).then((r) => setAuthLogs(r.items)),
-      errors: () => api.getMetricsErrors(params).then((r) => setErrors(r.items)),
+        api.getMetricsRequests(pageParams).then((r) => { setRequests(r.items); setTotal(r.total) }),
+      chat: () => api.getMetricsChatLogs(pageParams).then((r) => { setChatLogs(r.items); setTotal(r.total) }),
+      llm: () => api.getMetricsLlmCalls(pageParams).then((r) => { setLlmCalls(r.items); setTotal(r.total) }),
+      auth: () => api.getMetricsAuthLogs(pageParams).then((r) => { setAuthLogs(r.items); setTotal(r.total) }),
+      errors: () => api.getMetricsErrors(pageParams).then((r) => { setErrors(r.items); setTotal(r.total) }),
     }
 
     fetchers[tab]()
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [tab, days])
+  }, [tab, effFrom, effTo, page])
 
   useEffect(() => {
     load()
   }, [load])
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const tabs: { id: TabId; label: string }[] = [
     { id: 'overview', label: m.tabs.overview },
@@ -104,21 +128,36 @@ export default function MetricsPage() {
     <div className="fade-in space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <PageHeader title={m.title} subtitle={m.subtitle} />
-        <div className="flex gap-2 shrink-0">
+        <div className="flex flex-wrap items-end gap-2 shrink-0">
           <button
             type="button"
-            className={`px-3 py-1.5 rounded-lg text-sm border ${days === 7 ? 'bg-[var(--color-brand-primary)] text-white border-transparent' : 'border-[var(--color-border-default)]'}`}
-            onClick={() => setDays(7)}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${!dateFrom && !dateTo && days === 7 ? 'bg-[var(--color-brand-primary)] text-white border-transparent' : 'border-[var(--color-border-default)]'}`}
+            onClick={() => { setDays(7); setDateFrom(''); setDateTo('') }}
           >
             {m.days7}
           </button>
           <button
             type="button"
-            className={`px-3 py-1.5 rounded-lg text-sm border ${days === 30 ? 'bg-[var(--color-brand-primary)] text-white border-transparent' : 'border-[var(--color-border-default)]'}`}
-            onClick={() => setDays(30)}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${!dateFrom && !dateTo && days === 30 ? 'bg-[var(--color-brand-primary)] text-white border-transparent' : 'border-[var(--color-border-default)]'}`}
+            onClick={() => { setDays(30); setDateFrom(''); setDateTo('') }}
           >
             {m.days30}
           </button>
+          <div>
+            <label className="block text-[10px] text-[var(--color-text-muted)] mb-0.5">{m.dateFrom}</label>
+            <input type="date" className="input-field ltr py-1 text-sm" value={dateFrom} max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-[10px] text-[var(--color-text-muted)] mb-0.5">{m.dateTo}</label>
+            <input type="date" className="input-field ltr py-1 text-sm" value={dateTo} min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)} />
+          </div>
+          {(dateFrom || dateTo) && (
+            <button type="button" className="btn-ghost text-sm" onClick={() => { setDateFrom(''); setDateTo('') }}>
+              {m.clearDates}
+            </button>
+          )}
         </div>
       </div>
 
@@ -297,6 +336,30 @@ export default function MetricsPage() {
             ])}
           />
         )
+      ) : null}
+
+      {tab !== 'overview' && !loading && total > PAGE_SIZE ? (
+        <div className="flex items-center justify-end gap-3 text-sm">
+          <button
+            type="button"
+            className="btn-ghost px-3 disabled:opacity-40"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            {m.prev}
+          </button>
+          <span className="text-[var(--color-text-muted)]">
+            {m.page} {page} / {totalPages}
+          </span>
+          <button
+            type="button"
+            className="btn-ghost px-3 disabled:opacity-40"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            {m.next}
+          </button>
+        </div>
       ) : null}
     </div>
   )

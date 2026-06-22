@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ImagePlus, Send, Square, X } from 'lucide-react'
+import { ImagePlus, MessageSquareText, Send, Sparkles, Square, X } from 'lucide-react'
 import { CHAT_CHANNELS } from '@/api/client'
 import LanguageToggle from '@/components/layout/LanguageToggle'
-import { ocrImage, uploadChatImage, useChatStream, validateImageFile } from '@/hooks/useChatStream'
+import {
+  ocrImage,
+  uploadChatImage,
+  useChatStream,
+  validateImageFile,
+  type StationCardData,
+  type TripRow,
+} from '@/hooks/useChatStream'
 import { useLanguage } from '@/i18n/LanguageProvider'
 import MessageBubble from './MessageBubble'
 
@@ -20,6 +27,11 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   imageUrl?: string
+  sql?: string
+  ttftMs?: number
+  stations?: StationCardData[]
+  destinations?: string[]
+  trips?: TripRow[]
 }
 
 interface PendingImage {
@@ -147,6 +159,22 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
             prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + token } : m))
           )
         },
+        onMeta: (meta) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    sql: meta.sql ?? m.sql,
+                    ttftMs: meta.ttft_ms ?? m.ttftMs,
+                    stations: meta.stations ?? m.stations,
+                    destinations: meta.destinations ?? m.destinations,
+                    trips: meta.trips ?? m.trips,
+                  }
+                : m
+            )
+          )
+        },
         onError: (msg) => {
           setError(msg)
           setMessages((prev) =>
@@ -181,7 +209,9 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
     clearPendingImage()
   }
 
-  const showPrompts = initialized && messages.length <= 1 && !isStreaming
+  // In full-page mode the demo prompts live in the left sidebar, so don't
+  // duplicate them inline on the first screen.
+  const showPrompts = initialized && messages.length <= 1 && !isStreaming && !fullPage
   const demoPrompts = locale === 'ar' ? t.chat.promptsAr : t.chat.promptsEn
   const canSend = (input.trim() || pendingImage) && !isStreaming && !readingImage && initialized
 
@@ -190,26 +220,26 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
     return t.dashboard.channels[key] ?? ch
   }
 
-  return (
+  const panel = (
     <div
       className={`flex flex-col overflow-hidden ${
         fullPage
-          ? 'h-dvh w-full bg-[var(--color-surface-default)]'
+          ? 'flex-1 min-w-0 h-dvh bg-[var(--color-surface-default)]'
           : 'card h-[620px] max-w-2xl mx-auto shadow-md'
       }`}
     >
       <div
-        className="px-4 py-3.5 flex items-center justify-between shrink-0"
+        className="px-3 sm:px-4 py-3 sm:py-3.5 flex items-center justify-between gap-2 shrink-0"
         style={{ background: 'var(--color-brand-primary)', color: 'white' }}
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <img src="/gobus_logo.jpg" alt="GoBus" className="h-9 w-9 rounded-full ring-2 ring-white/30 object-cover bg-white shrink-0" />
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <img src="/gobus_logo.jpg" alt="GoBus" className="h-8 w-8 sm:h-9 sm:w-9 rounded-full ring-2 ring-white/30 object-cover bg-white shrink-0" />
           <div className="min-w-0">
             <div className="font-bold text-sm truncate">{t.chat.title}</div>
             <div className="text-xs opacity-85 truncate">{t.common.hotline}: {hotline}</div>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <select
             className="chat-channel-select"
             value={channel}
@@ -248,6 +278,11 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
                 role={msg.role}
                 content={msg.content}
                 imageUrl={msg.imageUrl}
+                sql={msg.sql}
+                ttftMs={msg.ttftMs}
+                stations={msg.stations}
+                destinations={msg.destinations}
+                trips={msg.trips}
                 isTyping={isStreaming && msg.role === 'assistant' && !msg.content}
               />
             ))}
@@ -338,6 +373,40 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
           )}
         </div>
       </div>
+    </div>
+  )
+
+  if (!fullPage) return panel
+
+  return (
+    <div className="flex h-dvh w-full">
+      <aside className="demo-sidebar hidden md:flex flex-col w-72 shrink-0 overflow-y-auto">
+        <div className="demo-sidebar-header">
+          <div className="flex items-center gap-2">
+            <span className="demo-sidebar-icon">
+              <Sparkles size={15} />
+            </span>
+            <span className="demo-sidebar-title">{t.chat.demoScenarios}</span>
+          </div>
+          <span className="demo-pill">Demo</span>
+        </div>
+        <div className="flex flex-col gap-2 p-3">
+          {demoPrompts.map((prompt, i) => (
+            <button
+              key={prompt}
+              type="button"
+              className="demo-item"
+              onClick={() => submit(prompt)}
+              disabled={isStreaming || readingImage || !initialized}
+            >
+              <span className="demo-item-num">{i + 1}</span>
+              <MessageSquareText size={14} className="demo-item-icon shrink-0" />
+              <span className="demo-item-text">{prompt}</span>
+            </button>
+          ))}
+        </div>
+      </aside>
+      {panel}
     </div>
   )
 }

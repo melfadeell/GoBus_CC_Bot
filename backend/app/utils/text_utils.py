@@ -25,12 +25,14 @@ def normalize_arabic(text: str | None) -> str:
     """Normalize Arabic text for fuzzy/substring matching.
 
     Removes diacritics and tatweel, unifies alef/ya/ta-marbuta/hamza forms,
-    lowercases latin characters, and collapses whitespace.
+    drops punctuation (e.g. trailing ؟ ، ?), lowercases latin, collapses whitespace.
     """
     if not text:
         return ""
     text = _ARABIC_DIACRITICS_RE.sub("", text)
     text = text.translate(_ARABIC_CHAR_MAP)
+    # Replace punctuation with spaces so "نصر؟" matches "نصر" (keep letters/digits).
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
     text = re.sub(r"\s+", " ", text)
     return text.strip().lower()
 

@@ -20,6 +20,9 @@ def get_logs_engine():
             settings.logs_database_url,
             pool_pre_ping=True,
             pool_recycle=3600,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=30,
         )
     return _logs_engine
 

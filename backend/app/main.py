@@ -13,7 +13,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import get_settings
 from app.core.bootstrap import bootstrap_database
 from app.core.exceptions import register_exception_handlers
+from app.core.logging import setup_logging
 from app.core.rate_limit import get_client_ip, limiter
+from app.core.scheduler import shutdown_scheduler, start_scheduler
 from app.routers import (
     auth,
     bot_settings,
@@ -30,7 +32,22 @@ from app.routers import (
 from app.services.logs_writer import log_error, log_request_end
 
 settings = get_settings()
+setup_logging()
 logger = logging.getLogger(__name__)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add standard security headers to every response."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+        return response
 
 
 class ApiLoggingMiddleware(BaseHTTPMiddleware):
@@ -53,13 +70,31 @@ class ApiLoggingMiddleware(BaseHTTPMiddleware):
             elapsed,
             client_ip=client_ip,
         )
+        # Record server errors that weren't already captured by the unhandled
+        # exception handler (which logs full stack traces).
+        if response.status_code >= 500 and not getattr(request.state, "error_logged", False):
+            log_error(
+                request_id=request_id,
+                error_type=f"HTTP{response.status_code}",
+                message=f"{request.method} {request.url.path} -> {response.status_code}",
+            )
         return response
+
+
+def _warn_weak_secrets() -> None:
+    if settings.jwt_secret in ("dev-secret-change-me", "gobus-dev-jwt-secret-change-in-production"):
+        logger.warning("JWT_SECRET is a known default — set a strong random secret in production.")
+    if settings.admin_password == "admin123":
+        logger.warning("ADMIN_PASSWORD is the default 'admin123' — change it before production.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _warn_weak_secrets()
     bootstrap_database()
+    start_scheduler()
     yield
+    shutdown_scheduler()
 
 
 app = FastAPI(title="GoBus Chatbot API", version="1.0.0", lifespan=lifespan)
@@ -77,10 +112,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 app.add_middleware(ApiLoggingMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 register_exception_handlers(app)
 
@@ -95,6 +131,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         message=str(exc),
         stack_trace=traceback.format_exc(),
     )
+    # Mark so the logging middleware doesn't double-log this as a generic 5xx.
+    request.state.error_logged = True
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
@@ -113,4 +151,25 @@ app.include_router(metrics.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    """Deep health check: verifies both databases are reachable."""
+    from sqlalchemy import text as _sql_text
+
+    from app.database import engine as main_engine
+    from app.logs_database import get_logs_engine
+
+    checks: dict[str, str] = {}
+    for name, eng in (("database", main_engine), ("logs_database", get_logs_engine())):
+        try:
+            with eng.connect() as conn:
+                conn.execute(_sql_text("SELECT 1"))
+            checks[name] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks[name] = f"error: {type(exc).__name__}"
+
+    healthy = all(v == "ok" for v in checks.values())
+    body = {
+        "status": "ok" if healthy else "degraded",
+        "version": settings.app_version,
+        "checks": checks,
+    }
+    return JSONResponse(status_code=200 if healthy else 503, content=body)

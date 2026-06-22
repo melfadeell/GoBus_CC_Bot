@@ -1,7 +1,8 @@
 import logging
 
 from fastapi import HTTPException
-from openai import AsyncOpenAI, OpenAIError
+from openai import OpenAIError
+from app.services.openai_client import get_openai_client
 
 from app.config import get_settings
 
@@ -24,7 +25,7 @@ async def enhance_prompt(base_prompt: str, instruction: str) -> str:
     if not settings.openai_api_key:
         raise HTTPException(status_code=503, detail="AI service unavailable")
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = get_openai_client()
     user_content = f"Current system prompt:\n\n{base_prompt}\n\nAdmin instruction to apply:\n\n{instruction}"
 
     try:

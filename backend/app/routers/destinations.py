@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_admin
+from app.services import reference_cache
 from app.database import get_db
 from app.models.models import AdminUser, Destination
 from app.schemas.schemas import DestinationCreate, DestinationOut, DestinationUpdate, PaginatedResponse
@@ -47,6 +48,7 @@ def create_destination(
     dest = Destination(**data)
     db.add(dest)
     db.commit()
+    reference_cache.invalidate()
     db.refresh(dest)
     return dest
 
@@ -64,6 +66,7 @@ def update_destination(
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(dest, key, value)
     db.commit()
+    reference_cache.invalidate()
     db.refresh(dest)
     return dest
 
@@ -77,4 +80,5 @@ def delete_destination(
         raise HTTPException(status_code=404, detail="Destination not found")
     db.delete(dest)
     db.commit()
+    reference_cache.invalidate()
     return {"ok": True}

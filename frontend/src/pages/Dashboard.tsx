@@ -3,16 +3,21 @@ import { Link } from 'react-router-dom'
 import { api, DASHBOARD_CHANNELS, DashboardAnalytics, DashboardStats } from '@/api/client'
 import ChannelBreakdownChart from '@/components/dashboard/ChannelBreakdownChart'
 import ChartCard from '@/components/dashboard/ChartCard'
+import CostTrendChart from '@/components/dashboard/CostTrendChart'
 import MessagesTrendChart from '@/components/dashboard/MessagesTrendChart'
+import TokenSplitChart from '@/components/dashboard/TokenSplitChart'
 import TokenUsageChart from '@/components/dashboard/TokenUsageChart'
 import { ErrorState, LoadingState, PageHeader } from '@/components/admin/Shared'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
 export default function DashboardPage() {
   const { t } = useLanguage()
+  const d = t.dashboard
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null)
   const [channel, setChannel] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -27,7 +32,11 @@ export default function DashboardPage() {
   const load = useCallback(() => {
     setLoading(true)
     setError(null)
-    const params = channel ? { channel } : undefined
+    const params = {
+      ...(channel ? { channel } : {}),
+      ...(dateFrom ? { date_from: dateFrom } : {}),
+      ...(dateTo ? { date_to: dateTo } : {}),
+    }
     Promise.all([api.getStats(params), api.getAnalytics({ ...params, days: 30 })])
       .then(([s, a]) => {
         setStats(s)
@@ -35,7 +44,7 @@ export default function DashboardPage() {
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [channel])
+  }, [channel, dateFrom, dateTo])
 
   useEffect(() => {
     load()
@@ -46,34 +55,73 @@ export default function DashboardPage() {
   if (!stats || !analytics) return null
 
   const cards = [
-    { label: t.dashboard.conversations, value: stats.total_sessions, link: '/admin/conversations' },
-    { label: t.dashboard.messages, value: stats.total_messages, link: '/admin/conversations' },
-    { label: t.dashboard.kbArticles, value: stats.kb_articles, link: '/admin/kb', accent: true },
-    { label: t.dashboard.stations, value: stats.stations, link: '/admin/stations' },
-    { label: t.dashboard.destinations, value: stats.destinations, link: '/admin/kb?tab=destinations' },
-    { label: t.dashboard.activeTrips, value: stats.active_trips, link: '/admin/trips', accent: true },
+    { label: d.conversations, value: stats.total_sessions, link: '/admin/conversations' },
+    { label: d.messages, value: stats.total_messages, link: '/admin/conversations' },
+    { label: d.kbArticles, value: stats.kb_articles, link: '/admin/kb', accent: true },
+    { label: d.stations, value: stats.stations, link: '/admin/stations' },
+    { label: d.destinations, value: stats.destinations, link: '/admin/kb?tab=destinations' },
+    { label: d.activeTrips, value: stats.active_trips, link: '/admin/trips', accent: true },
+  ]
+
+  const tokenCards = [
+    { label: d.totalTokens, value: stats.total_tokens.toLocaleString(), accent: true },
+    { label: d.inputTokens, value: stats.prompt_tokens.toLocaleString() },
+    { label: d.outputTokens, value: stats.completion_tokens.toLocaleString() },
+    { label: d.costEstimate, value: `$${stats.total_cost_usd.toFixed(4)}`, accent: true },
   ]
 
   return (
     <div className="fade-in space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-        <PageHeader title={t.dashboard.title} subtitle={t.dashboard.subtitle} />
-        <div className="shrink-0">
-          <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">
-            {t.dashboard.filterChannel}
-          </label>
-          <select
-            className="input-field min-w-[180px]"
-            value={channel}
-            onChange={(e) => setChannel(e.target.value)}
-          >
-            <option value="">{t.dashboard.allChannels}</option>
-            {DASHBOARD_CHANNELS.map((ch) => (
-              <option key={ch} value={ch}>
-                {channelLabel(ch)}
-              </option>
-            ))}
-          </select>
+      <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+        <PageHeader title={d.title} subtitle={d.subtitle} />
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{d.dateFrom}</label>
+            <input
+              type="date"
+              className="input-field ltr"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{d.dateTo}</label>
+            <input
+              type="date"
+              className="input-field ltr"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </div>
+          {(dateFrom || dateTo) && (
+            <button
+              type="button"
+              className="btn-ghost text-sm"
+              onClick={() => {
+                setDateFrom('')
+                setDateTo('')
+              }}
+            >
+              {d.clearDates}
+            </button>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{d.filterChannel}</label>
+            <select
+              className="input-field min-w-[160px]"
+              value={channel}
+              onChange={(e) => setChannel(e.target.value)}
+            >
+              <option value="">{d.allChannels}</option>
+              {DASHBOARD_CHANNELS.map((ch) => (
+                <option key={ch} value={ch}>
+                  {channelLabel(ch)}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -95,32 +143,50 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      <div className="card p-3 flex items-center justify-between gap-4">
-        <div>
-          <div className="text-xs text-[var(--color-text-muted)]">{t.dashboard.totalTokens}</div>
-          <div className="text-2xl font-bold" style={{ color: 'var(--color-brand-accent)' }}>
-            {stats.total_tokens.toLocaleString()}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {tokenCards.map((c) => (
+          <div key={c.label} className="card p-3">
+            <div className="text-xs text-[var(--color-text-muted)] truncate">{c.label}</div>
+            <div
+              className="text-2xl font-bold mt-0.5"
+              style={{ color: c.accent ? 'var(--color-brand-accent)' : 'var(--color-brand-primary)' }}
+            >
+              {c.value}
+            </div>
           </div>
-        </div>
-        {channel && (
-          <div className="text-sm text-[var(--color-text-muted)]">
-            {channelLabel(channel)}
-          </div>
-        )}
+        ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
         <ChartCard
-          title={t.dashboard.tokenUsage}
-          subtitle={t.dashboard.tokenUsageSub}
+          title={d.tokenSplit}
+          subtitle={d.tokenSplitSub}
+          fullscreenContent={
+            <TokenSplitChart data={analytics.daily} height={420} inputLabel={d.inputTokens} outputLabel={d.outputTokens} />
+          }
+        >
+          <TokenSplitChart data={analytics.daily} inputLabel={d.inputTokens} outputLabel={d.outputTokens} />
+        </ChartCard>
+
+        <ChartCard
+          title={d.costTrend}
+          subtitle={d.costTrendSub}
+          fullscreenContent={<CostTrendChart data={analytics.daily} height={420} />}
+        >
+          <CostTrendChart data={analytics.daily} />
+        </ChartCard>
+
+        <ChartCard
+          title={d.tokenUsage}
+          subtitle={d.tokenUsageSub}
           fullscreenContent={<TokenUsageChart data={analytics.daily} height={420} />}
         >
           <TokenUsageChart data={analytics.daily} />
         </ChartCard>
 
         <ChartCard
-          title={t.dashboard.channelBreakdown}
-          subtitle={t.dashboard.channelBreakdownSub}
+          title={d.channelBreakdown}
+          subtitle={d.channelBreakdownSub}
           fullscreenContent={
             <ChannelBreakdownChart data={analytics.by_channel} channelLabel={channelLabel} height={420} />
           }
@@ -129,8 +195,8 @@ export default function DashboardPage() {
         </ChartCard>
 
         <ChartCard
-          title={t.dashboard.messagesTrend}
-          subtitle={t.dashboard.messagesTrendSub}
+          title={d.messagesTrend}
+          subtitle={d.messagesTrendSub}
           fullscreenContent={<MessagesTrendChart data={analytics.daily} height={420} />}
         >
           <MessagesTrendChart data={analytics.daily} />

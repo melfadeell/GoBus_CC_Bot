@@ -197,6 +197,108 @@ button:disabled {
   background: var(--color-accent-soft);
 }
 
+/* Demo questions sidebar (full-page chat) */
+.demo-sidebar {
+  background: linear-gradient(180deg, var(--color-surface-muted) 0%, #ffffff 22%);
+  border-inline-end: 1px solid var(--color-border-default);
+}
+
+.demo-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--color-border-default);
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 1;
+}
+
+.demo-sidebar-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 0.5rem;
+  background: var(--color-brand-primary);
+  color: white;
+}
+
+.demo-sidebar-title {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--color-text-default);
+}
+
+.demo-pill {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  color: var(--color-brand-accent);
+  background: var(--color-accent-soft);
+}
+
+.demo-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  text-align: start;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-inline-start: 3px solid transparent;
+  border-radius: 0.7rem;
+  background: white;
+  color: var(--color-text-default);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.demo-item:hover:not(:disabled) {
+  border-color: var(--color-brand-accent);
+  border-inline-start-color: var(--color-brand-accent);
+  background: var(--color-accent-soft);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.08));
+}
+
+.demo-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.demo-item-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.demo-item-icon {
+  color: var(--color-brand-primary);
+}
+
+.demo-item-text {
+  flex: 1;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .chat-channel-select {
   appearance: none;
   font-size: var(--font-size-xs);
@@ -315,7 +417,286 @@ button:disabled {
   font-weight: 700;
 }
 
+.chat-md-link {
+  color: var(--color-brand-primary);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-md-link:hover {
+  color: var(--color-brand-accent);
+}
+
+/* Deterministic station card (rendered from structured data, not model markdown) */
+.station-card {
+  border: 1px solid var(--color-border-default);
+  border-inline-start: 3px solid var(--color-brand-primary);
+  border-radius: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--color-surface-muted);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.station-card-name {
+  font-weight: 700;
+  color: var(--color-brand-primary);
+  margin-bottom: 0.3rem;
+}
+
+.station-card-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.15rem 0;
+  color: var(--color-text-default);
+}
+
+.station-card-icon {
+  margin-top: 0.15rem;
+  color: var(--color-text-muted);
+}
+
+.station-card-map {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: var(--color-brand-primary);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+.station-card-map:hover {
+  background: var(--color-brand-accent);
+}
+
+/* Destination chips (rendered from DB, not model text) */
+.dest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.dest-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-brand-primary);
+  border: 1px solid var(--color-border-default);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Export-to-image button pinned to the top-trailing corner of the bubble */
+.msg-export-btn {
+  position: absolute;
+  top: 6px;
+  inset-inline-end: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 0.5rem;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-default);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  z-index: 2;
+}
+
+.msg-export-btn:hover:not(:disabled) {
+  color: var(--color-brand-primary);
+  border-color: var(--color-brand-accent);
+  background: #fff;
+}
+
+.msg-export-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Enhanced SQL viewer */
+.sql-bubble summary {
+  list-style: none;
+}
+.sql-bubble summary::-webkit-details-marker {
+  display: none;
+}
+
+.sql-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+}
+
+.sql-summary:hover {
+  color: var(--color-brand-primary);
+  border-color: var(--color-brand-accent);
+}
+
+.sql-summary-hint {
+  font-weight: 400;
+  opacity: 0.65;
+}
+
+.sql-panel {
+  margin-top: 0.5rem;
+  border: 1px solid #1e293b;
+  border-radius: 0.6rem;
+  overflow: hidden;
+  background: #0f172a;
+}
+
+.sql-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.35rem 0.6rem;
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.sql-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.sql-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  color: #cbd5e1;
+  background: transparent;
+  border: 1px solid #334155;
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+
+.sql-copy:hover {
+  color: #fff;
+  border-color: #475569;
+}
+
+.sql-code {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
 .message-bubble.bg-\[var\(--color-brand-primary\)\] .chat-md-h,
 .message-bubble.bg-\[var\(--color-brand-primary\)\] .chat-md-li::marker {
   color: inherit;
+}
+
+.chat-md-table-wrap {
+  margin: 0.5rem 0 0.7rem;
+  overflow-x: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.6rem;
+}
+
+.chat-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.chat-md-thead {
+  background: var(--color-surface-muted);
+}
+
+.chat-md-th {
+  text-align: start;
+  font-weight: 700;
+  padding: 0.45rem 0.6rem;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.chat-md-td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--color-border-default);
+  vertical-align: top;
+}
+
+.chat-md-table tr:last-child .chat-md-td {
+  border-bottom: none;
+}
+
+/* Full borders applied only while exporting the table to an image */
+.chat-md-table.exporting {
+  border-collapse: collapse;
+  background: #ffffff;
+}
+.chat-md-table.exporting .chat-md-th,
+.chat-md-table.exporting .chat-md-td {
+  border: 1px solid #94a3b8 !important;
+  padding: 8px 12px !important;
+}
+.chat-md-table.exporting .chat-md-thead,
+.chat-md-table.exporting .chat-md-th {
+  background: #f1f5f9 !important;
+  font-weight: 700 !important;
+}
+
+/* --- Mobile responsiveness --- */
+@media (max-width: 480px) {
+  /* Keep the chat header controls from crowding out the title on small screens. */
+  .chat-channel-select {
+    max-width: 6rem;
+  }
+  /* Slightly denser tables so more columns fit before horizontal scroll. */
+  .chat-md-table {
+    font-size: 0.78rem;
+  }
+  .chat-md-th,
+  .chat-md-td {
+    padding: 0.35rem 0.45rem;
+  }
+  /* Demo question rows a touch tighter. */
+  .demo-item {
+    font-size: 0.78rem;
+  }
+}
+
+/* Structured/result blocks must never push the page wider than the viewport. */
+.chat-md-table-wrap,
+.sql-code,
+.sql-panel {
+  max-width: 100%;
+}
+.station-card,
+.dest-chips {
+  max-width: 100%;
 }

@@ -149,7 +149,7 @@ class BotSettings(Base):
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     greeting_ar: Mapped[str] = mapped_column(Text, nullable=False)
     hotline: Mapped[str] = mapped_column(String(50), default="19567")
-    model_name: Mapped[str] = mapped_column(String(50), default="gpt-4o")
+    model_name: Mapped[str] = mapped_column(String(50), default="gpt-4o-mini")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )

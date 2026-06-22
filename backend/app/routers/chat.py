@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -54,7 +55,8 @@ async def chat_ocr(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Image too large (max 5 MB)")
 
     try:
-        text = extract_text_from_image(data)
+        # OCR (tesseract) is CPU-bound and blocking — run it off the event loop.
+        text = await asyncio.to_thread(extract_text_from_image, data)
     except Exception as exc:
         logger.warning("OCR failed: %s", exc)
         raise HTTPException(status_code=422, detail="Could not read text from image") from exc
@@ -76,8 +78,14 @@ async def chat_stream(request: Request, payload: ChatRequest):
         yield {"event": "session", "data": json.dumps({"session_id": session_id})}
 
         db = SessionLocal()
+        # Stop work (and free the DB session) if the client disconnects mid-stream.
+        cancelled = {"flag": False}
+
+        def is_cancelled() -> bool:
+            return cancelled["flag"]
+
         try:
-            async for token in stream_chat_response(
+            async for event in stream_chat_response(
                 db,
                 session_id,
                 user_message,
@@ -86,8 +94,16 @@ async def chat_stream(request: Request, payload: ChatRequest):
                 channel=payload.channel,
                 client_ip=client_ip,
                 request_id=request_id,
+                cancelled=is_cancelled,
             ):
-                yield {"event": "token", "data": json.dumps({"content": token})}
+                if await request.is_disconnected():
+                    cancelled["flag"] = True
+                    break
+                if event["type"] == "token":
+                    yield {"event": "token", "data": json.dumps({"content": event["content"]})}
+                elif event["type"] == "meta":
+                    meta_payload = {k: v for k, v in event.items() if k != "type"}
+                    yield {"event": "meta", "data": json.dumps(meta_payload)}
             yield {"event": "done", "data": json.dumps({"session_id": session_id})}
         except ChatProcessingError as exc:
             logger.warning("Chat processing error: %s", exc)

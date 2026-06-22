@@ -76,13 +76,25 @@ def metrics_overview(
 @router.get("/charts", response_model=MetricsCharts)
 def metrics_charts(
     days: int = Query(30, ge=7, le=90),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
     db: Session = Depends(get_logs_db),
     _: AdminUser = Depends(get_current_admin),
 ):
-    start = date.today() - timedelta(days=days - 1)
+    parsed_from = _parse_date(date_from)
+    parsed_to = _parse_date(date_to)
+    if parsed_from and parsed_to:
+        if parsed_to < parsed_from:
+            parsed_from, parsed_to = parsed_to, parsed_from
+        start = parsed_from
+        span = min((parsed_to - parsed_from).days, 92)
+    else:
+        start = date.today() - timedelta(days=days - 1)
+        span = days - 1
+
     daily: list[MetricsDailyPoint] = []
 
-    for offset in range(days):
+    for offset in range(span + 1):
         day = start + timedelta(days=offset)
         day_str = day.isoformat()
 

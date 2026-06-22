@@ -305,6 +305,9 @@ class DashboardStats(BaseModel):
     total_sessions: int
     total_messages: int
     total_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_cost_usd: float = 0.0
     kb_articles: int
     stations: int
     destinations: int
@@ -316,12 +319,17 @@ class ChannelTokenStat(BaseModel):
     sessions: int
     messages: int
     total_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class DailyAnalyticsPoint(BaseModel):
     date: str
     messages: int
     tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 class DashboardAnalytics(BaseModel):

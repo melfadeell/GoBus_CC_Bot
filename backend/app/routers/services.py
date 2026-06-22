@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_admin
+from app.services import reference_cache
 from app.database import get_db
 from app.models.models import AdminUser, Service
 from app.schemas.schemas import ServiceOut, ServiceUpdate
@@ -35,5 +36,6 @@ def update_service(
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(svc, key, value)
     db.commit()
+    reference_cache.invalidate()
     db.refresh(svc)
     return svc
