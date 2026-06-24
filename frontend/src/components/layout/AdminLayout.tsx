@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useNavigate, Link } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   Activity,
   BookOpen,
@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Route,
   Settings,
+  Ticket,
   X,
 } from 'lucide-react'
 import { clearToken } from '@/api/client'
@@ -35,6 +36,7 @@ export default function AdminLayout() {
     { to: '/admin/kb', label: t.nav.kb, icon: BookOpen },
     { to: '/admin/stations', label: t.nav.stations, icon: MapPin },
     { to: '/admin/trips', label: t.nav.trips, icon: Route },
+    { to: '/admin/tickets', label: t.nav.tickets, icon: Ticket },
     { to: '/admin/conversations', label: t.nav.conversations, icon: MessageSquare },
     { to: '/admin/metrics', label: t.nav.metrics, icon: Activity },
     { to: '/admin/bot-settings', label: t.nav.botSettings, icon: Settings },
@@ -64,14 +66,6 @@ export default function AdminLayout() {
             <div className="text-xs opacity-75 whitespace-normal leading-tight">{t.nav.adminSubtitle}</div>
           </div>
         )}
-        <button
-          type="button"
-          className={`hidden lg:flex p-1.5 rounded-lg hover:bg-white/10 text-white/80 shrink-0 ${showLabels ? '' : ''}`}
-          onClick={() => setCollapsed((c) => !c)}
-          title={collapsed ? t.nav.expandSidebar : t.nav.collapseSidebar}
-        >
-          <CollapseIcon size={18} />
-        </button>
         <button type="button" className="ms-auto lg:hidden text-white/80 shrink-0" onClick={() => setMobileOpen(false)}>
           <X size={20} />
         </button>
@@ -136,6 +130,14 @@ export default function AdminLayout() {
             <button type="button" className="lg:hidden p-2 rounded-lg hover:bg-[var(--color-surface-muted)]" onClick={() => setMobileOpen(true)}>
               <Menu size={20} />
             </button>
+            <button
+              type="button"
+              className="hidden lg:flex p-2 rounded-lg hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] shrink-0"
+              onClick={() => setCollapsed((c) => !c)}
+              title={collapsed ? t.nav.expandSidebar : t.nav.collapseSidebar}
+            >
+              <CollapseIcon size={20} />
+            </button>
             <div>
               <h1 className="text-base lg:text-lg font-bold" style={{ color: 'var(--color-brand-primary)' }}>
                 GoBus Chatbot
@@ -144,10 +146,10 @@ export default function AdminLayout() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <Link to="/chat" className="btn-accent text-sm flex items-center gap-2 px-3 py-2">
+            <a href="/chat" target="_blank" rel="noopener noreferrer" className="btn-accent text-sm flex items-center gap-2 px-3 py-2">
               <MessageSquare size={16} />
               <span className="hidden sm:inline">{t.nav.tryChat}</span>
-            </Link>
+            </a>
             <LanguageToggle />
           </div>
         </header>

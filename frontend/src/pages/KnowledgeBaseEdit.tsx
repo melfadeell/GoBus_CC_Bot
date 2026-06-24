@@ -55,6 +55,11 @@ export default function KnowledgeBaseEditPage() {
   }, [id, isNew, searchParams])
 
   function updateScope(all: boolean, services: string[]) {
+    // Selecting every individual scope is equivalent to "All" — collapse to it.
+    if (!all && services.length >= SERVICE_CODES.length) {
+      all = true
+      services = []
+    }
     setScopeAll(all)
     setScopeServices(services)
     setForm((f) => ({ ...f, service_scope: serializeServiceScope(all, services) }))

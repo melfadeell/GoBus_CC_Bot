@@ -2,6 +2,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Legend,
   ResponsiveContainer,
   Tooltip,
@@ -24,7 +25,11 @@ export default function TokenSplitChart({
   inputLabel = 'Input',
   outputLabel = 'Output',
 }: TokenSplitChartProps) {
-  const formatted = data.map((d) => ({ ...d, label: d.date.slice(5) }))
+  const formatted = data.map((d) => ({
+    ...d,
+    label: d.date.slice(5),
+    total: (d.prompt_tokens || 0) + (d.completion_tokens || 0),
+  }))
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -53,7 +58,18 @@ export default function TokenSplitChart({
           fill="var(--color-brand-accent)"
           radius={[4, 4, 0, 0]}
           animationDuration={700}
-        />
+        >
+          <LabelList
+            dataKey="total"
+            position="top"
+            fontSize={9}
+            fill="var(--color-text-muted)"
+            formatter={(value) => {
+              const n = Number(value ?? 0)
+              return n > 0 ? n.toLocaleString() : ''
+            }}
+          />
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   )

@@ -15,7 +15,6 @@ const empty: Station = {
   closes_at: '',
   map_url: '',
   map_text: '',
-  city: '',
   is_active: true,
 }
 
@@ -94,7 +93,6 @@ export default function StationEditPage() {
             </div>
           )}
         </div>
-        <div><label className="block text-sm mb-1 font-medium">{t.stations.city}</label><input className="input-field" value={form.city || ''} onChange={(e) => setForm({ ...form, city: e.target.value })} /></div>
         <div><label className="block text-sm mb-1 font-medium">{t.stations.mapUrl}</label><input className="input-field ltr" value={form.map_url || ''} onChange={(e) => setForm({ ...form, map_url: e.target.value })} /></div>
         <ToggleSwitch checked={form.is_active} onChange={(v) => setForm({ ...form, is_active: v })} label={t.common.active} />
         <div className="flex gap-3"><button type="submit" className="btn-primary" disabled={saving}>{saving ? t.common.saving : t.common.save}</button><button type="button" className="btn-ghost" onClick={() => navigate('/admin/stations')}>{t.common.cancel}</button></div>

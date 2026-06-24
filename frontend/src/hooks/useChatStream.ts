@@ -1,16 +1,18 @@
 import { useCallback, useRef, useState } from 'react'
+import { getCustomerToken, type TicketDraft, type TicketSummary } from '@/api/client'
 
 export interface StationCardData {
   name: string
   address: string
   working_hours: string
   map_url: string
-  city: string
 }
 
 export interface TripRow {
   origin: string
   destination: string
+  departure_station?: string | null
+  arrival_station?: string | null
   date: string
   departure: string
   arrival: string
@@ -30,6 +32,10 @@ interface StreamCallbacks {
     stations?: StationCardData[]
     destinations?: string[]
     trips?: TripRow[]
+    action?: string
+    draft?: TicketDraft
+    logged_in?: boolean
+    tickets_crm?: TicketSummary[]
   }) => void
   onDone?: () => void
   onError?: (error: string) => void
@@ -169,9 +175,17 @@ export function useChatStream() {
           body.channel = options.channel
         }
 
+        const streamHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        }
+        // Identify the logged-in customer so greeting + ticket follow-up work.
+        const customerToken = getCustomerToken()
+        if (customerToken) streamHeaders.Authorization = `Bearer ${customerToken}`
+
         const res = await fetch('/api/chat/stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+          headers: streamHeaders,
           body: JSON.stringify(body),
           signal: controller.signal,
         })
@@ -208,6 +222,15 @@ export function useChatStream() {
                 ? (payload.destinations as string[])
                 : undefined,
               trips: Array.isArray(payload.trips) ? (payload.trips as TripRow[]) : undefined,
+              action: typeof payload.action === 'string' ? payload.action : undefined,
+              draft:
+                payload.draft && typeof payload.draft === 'object'
+                  ? (payload.draft as TicketDraft)
+                  : undefined,
+              logged_in: typeof payload.logged_in === 'boolean' ? payload.logged_in : undefined,
+              tickets_crm: Array.isArray(payload.tickets_crm)
+                ? (payload.tickets_crm as TicketSummary[])
+                : undefined,
             })
           } else if (event === 'error') {
             callbacks.onError?.(typeof payload.error === 'string' ? payload.error : 'Error')

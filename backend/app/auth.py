@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.core.rate_limit import get_client_ip
 from app.database import get_db
-from app.models.models import AdminUser
+from app.models.models import AdminUser, Customer
 from app.services.logs_writer import log_auth
 
 security = HTTPBearer(auto_error=False)
@@ -28,6 +28,55 @@ def create_access_token(subject: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {"sub": subject, "exp": expire}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def create_customer_token(customer_id: int) -> str:
+    """Customer JWT — carries typ:"customer" so it can never be used as an admin
+    token (and vice-versa)."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
+    payload = {"sub": str(customer_id), "typ": "customer", "exp": expire}
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def _decode_customer(token: str, db: Session) -> Customer | None:
+    """Return the Customer for a valid customer token, else None."""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except JWTError:
+        return None
+    if payload.get("typ") != "customer":
+        return None
+    sub = payload.get("sub")
+    if not sub:
+        return None
+    try:
+        customer_id = int(sub)
+    except (TypeError, ValueError):
+        return None
+    return db.query(Customer).filter(Customer.id == customer_id).first()
+
+
+def get_current_customer(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+) -> Customer:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    customer = _decode_customer(credentials.credentials, db)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    return customer
+
+
+def get_current_customer_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+) -> Customer | None:
+    """Resolve the customer if a valid token is present, else None — never raises.
+    Used by the chat stream + greeting, which must stay usable for anonymous users."""
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    return _decode_customer(credentials.credentials, db)
 
 
 def get_current_admin(

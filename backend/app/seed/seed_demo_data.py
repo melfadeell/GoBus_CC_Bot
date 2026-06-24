@@ -7,7 +7,8 @@ from datetime import date, datetime, timedelta, time
 from sqlalchemy.orm import Session
 
 from app.core.constants import DASHBOARD_CHANNELS
-from app.models.models import ChatMessage, ChatSession, KbArticle, KbCategory, Route, Trip
+from app.models.models import ChatMessage, ChatSession, KbArticle, KbCategory, Route, Station, Trip
+from app.utils.text_utils import normalize_arabic
 
 # Merged into seed — Cairo→دهب and more coastal routes
 EXTRA_ROUTE_CONFIG = [
@@ -94,6 +95,21 @@ DEPARTURE_SLOTS = [
 ]
 
 
+def _match_station(stations: list, city_name: str):
+    """Best-effort: pick a station whose name relates to the route endpoint city.
+    Returns None when nothing matches (admin can assign later)."""
+    norm = normalize_arabic(city_name)
+    if not norm:
+        return None
+    for st in stations:
+        if norm in normalize_arabic(st.name):
+            return st
+    for st in stations:
+        if normalize_arabic(st.name) in norm:
+            return st
+    return None
+
+
 def _generate_trips_for_route(
     db: Session, route: Route, classes: list[str], days: int = 14, *, force: bool = False
 ) -> None:
@@ -107,6 +123,24 @@ def _generate_trips_for_route(
 
     today = date.today()
     price_map = {"standard": 150, "elite": 250, "business": 350}
+
+    # Departure/arrival station for this route: prefer the explicit city→station
+    # map (so the trip table is never blank), fall back to a fuzzy name match.
+    from app.core.constants import CITY_STATION_NAMES
+
+    active_stations = db.query(Station).filter(Station.is_active.is_(True)).all()
+    by_name = {s.name: s for s in active_stations}
+
+    def _station_for(city: str):
+        mapped = CITY_STATION_NAMES.get(city)
+        if mapped and mapped in by_name:
+            return by_name[mapped]
+        return _match_station(active_stations, city)
+
+    dep_station = _station_for(route.origin)
+    arr_station = _station_for(route.destination)
+    dep_station_id = dep_station.id if dep_station else None
+    arr_station_id = arr_station.id if arr_station else None
 
     for day_offset in range(days):
         trip_date = today + timedelta(days=day_offset)
@@ -134,6 +168,8 @@ def _generate_trips_for_route(
                     price_egp=price_map.get(bus_class, 150) + random.randint(-20, 80),
                     is_bookable=not is_full,
                     status="full" if is_full else "open",
+                    departure_station_id=dep_station_id,
+                    arrival_station_id=arr_station_id,
                 )
             )
 

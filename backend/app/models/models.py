@@ -26,6 +26,89 @@ class AdminUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Customer(Base):
+    """End-customer account (distinct from AdminUser). Created via self-register
+    from the chat; used for ticketing + personalized greeting."""
+
+    __tablename__ = "customers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str] = mapped_column(String(40), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Ticket(Base):
+    """A customer support ticket raised from the bot (or via the external API)."""
+
+    __tablename__ = "tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_number: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    # Either a logged-in customer OR an anonymous guest (email+phone captured).
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True)
+    guest_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    guest_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    guest_phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    channel: Mapped[str] = mapped_column(String(50), default="website")
+    category: Mapped[str] = mapped_column(String(40), default="other")
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="open")
+    priority: Mapped[str] = mapped_column(String(20), default="medium")
+    # The classifier's original priority (admin may override `priority`).
+    priority_auto: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    assigned_admin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("admin_users.id"), nullable=True
+    )
+    session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    messages: Mapped[list["TicketMessage"]] = relationship(
+        back_populates="ticket", cascade="all, delete-orphan"
+    )
+    customer: Mapped["Customer | None"] = relationship()
+
+
+class TicketMessage(Base):
+    """A single entry in a ticket's thread (customer / agent / bot / system)."""
+
+    __tablename__ = "ticket_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id"), nullable=False)
+    author_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    author_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    attachment_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    ticket: Mapped["Ticket"] = relationship(back_populates="messages")
+
+
+class EmailOtp(Base):
+    """One-time code emailed to a guest to verify their email before they can
+    create / look up a ticket. The code is stored hashed."""
+
+    __tablename__ = "email_otps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False, default="ticket_create")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class KbCategory(Base):
     __tablename__ = "kb_categories"
 
@@ -68,7 +151,6 @@ class Station(Base):
     closes_at: Mapped[str | None] = mapped_column(String(20), nullable=True)
     map_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     map_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -134,12 +216,28 @@ class Trip(Base):
     price_egp: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     is_bookable: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(20), default="open")
+    departure_station_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stations.id"), nullable=True
+    )
+    arrival_station_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stations.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
     route: Mapped["Route"] = relationship(back_populates="trips")
+    departure_station: Mapped["Station | None"] = relationship(foreign_keys=[departure_station_id])
+    arrival_station: Mapped["Station | None"] = relationship(foreign_keys=[arrival_station_id])
+
+    @property
+    def departure_station_name(self) -> str | None:
+        return self.departure_station.name if self.departure_station else None
+
+    @property
+    def arrival_station_name(self) -> str | None:
+        return self.arrival_station.name if self.arrival_station else None
 
 
 class BotSettings(Base):

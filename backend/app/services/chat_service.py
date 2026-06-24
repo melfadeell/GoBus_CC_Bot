@@ -18,10 +18,12 @@ from app.core.constants import (
 )
 from app.core.guardrails import HARD_GUARDRAILS
 from app.core.logging import metrics_logger
-from app.models.models import BotSettings, ChatMessage, ChatSession
+from app.models.models import BotSettings, ChatMessage, ChatSession, Ticket
 from app.services.kb_retrieval import _HISTORY_SEP, retrieve_context
 from app.services.logs_writer import log_chat_turn, log_error, log_llm_call
 from app.services.query_understanding import correct_query, needs_rewrite
+from app.services.ticket_intent import detect_ticket_intent
+from app.services.ticketing_agent import build_ticket_draft
 
 settings = get_settings()
 
@@ -90,6 +92,29 @@ def get_conversation_history(
     return [{"role": m.role, "content": m.content} for m in combined if m.content.strip()]
 
 
+def fetch_ticket_summaries(db: Session, customer_id: int, limit: int = 10) -> list[dict]:
+    """Compact ticket rows for the chat follow-up cards (plain dicts so nothing
+    detached is accessed from the async context)."""
+    rows = (
+        db.query(Ticket)
+        .filter(Ticket.customer_id == customer_id)
+        .order_by(Ticket.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "ref_number": t.ref_number,
+            "subject": t.subject,
+            "category": t.category,
+            "status": t.status,
+            "priority": t.priority,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in rows
+    ]
+
+
 def _reply_language_directive(message: str) -> str:
     """Per-message language instruction — far more reliable than a general rule."""
     if re.search(r"[؀-ۿ]", message or ""):
@@ -108,7 +133,42 @@ def _reply_language_directive(message: str) -> str:
     return ""
 
 
-def _build_system_prompt(system_prompt: str, context: str, message: str = "") -> str:
+_TICKET_DIRECTIVES = {
+    "raise_collect": (
+        "\n--- Support ticket (mandatory) ---\n"
+        "The customer wants to raise a complaint/ticket but has NOT yet described what "
+        "actually happened. Do NOT create a ticket and do NOT show any form. Reply with "
+        "ONE short, friendly question asking them to describe the problem (what happened, "
+        "when, which trip/route if relevant) so you can open the ticket for them.\n"
+    ),
+    "raise": (
+        "\n--- Support ticket (mandatory) ---\n"
+        "The customer described their issue. The app is showing them a ticket form "
+        "(pre-filled) to review and confirm — do NOT ask for the details again and "
+        "do NOT claim a ticket was created. Reply with ONE short line telling them to review "
+        "and confirm the ticket details shown below.\n"
+    ),
+    "check": (
+        "\n--- Support ticket (mandatory) ---\n"
+        "The customer is following up on their tickets. The app is showing their tickets as "
+        "cards below. Reply with ONE short line (e.g. 'Here are your tickets:'); do NOT list "
+        "or invent ticket details yourself.\n"
+    ),
+    "login_required": (
+        "\n--- Support ticket (mandatory) ---\n"
+        "The customer asked about their tickets but is not logged in. Politely ask them to log "
+        "in (or create an account) to view their tickets. Keep it to one or two short lines.\n"
+    ),
+}
+
+
+def _build_system_prompt(
+    system_prompt: str,
+    context: str,
+    message: str = "",
+    ticket_mode: str | None = None,
+    hotline: str = DEFAULT_HOTLINE,
+) -> str:
     formatting = """
 --- Response format (mandatory) ---
 Use Markdown: ## headers for sections, - bullets for lists. No wall-of-text paragraphs.
@@ -121,19 +181,23 @@ reply with ONLY a short one-line intro and do NOT repeat, list, or re-format tha
 yourself. Never invent trips/stations/prices, and never claim you lack data when the
 context says results are shown.
 """
+    ticket_directive = _TICKET_DIRECTIVES.get(ticket_mode or "", "")
     kb_context = (
         context
         if context
         else "No GoBus-specific KB matches for this query. General questions may still be answered helpfully."
     )
-    return f"""{HARD_GUARDRAILS}
+    assembled = f"""{HARD_GUARDRAILS}
 
 {system_prompt}
-{formatting}
+{formatting}{ticket_directive}
 {_reply_language_directive(message)}
 --- سياق قاعدة المعرفة (GoBus) ---
 {kb_context}
 """
+    # Single-source hotline: the prompt/guardrails carry a {{HOTLINE}} placeholder
+    # that we fill from the editable BotSettings.hotline at runtime.
+    return assembled.replace("{{HOTLINE}}", hotline)
 
 
 def _build_user_content(message: str, ocr_text: str | None = None) -> str:
@@ -152,12 +216,28 @@ def _build_user_content(message: str, ocr_text: str | None = None) -> str:
     return "\n\n".join(parts)
 
 
+def _build_greeting(name: str | None, message: str, base_greeting: str) -> str:
+    """Channel greeting, name-aware. Arabic by default; English if the first
+    message is in English. Used to greet on the customer's first message on
+    non-website channels (which have no page-load greeting)."""
+    is_english = bool(re.search(r"[A-Za-z]", message or "")) and not re.search(r"[؀-ۿ]", message or "")
+    if is_english:
+        hi = f"Hello {name}!" if name else "Hello!"
+        return f"{hi} I'm the GoBus assistant. How can I help you today?"
+    hi = f"مرحباً {name}!" if name else "مرحباً!"
+    # Reuse the configured Arabic greeting body where possible.
+    body = base_greeting.replace("مرحباً!", "").strip() or "أنا مساعد جوباص. كيف يمكنني مساعدتك اليوم؟"
+    return f"{hi} {body}"
+
+
 def _prepare_turn(
     db: Session, session_id: str, channel: str, stored_content: str, image_url: str | None
 ) -> dict:
     """Sync pre-LLM DB work (runs in a thread): persist the user message, load
     bot settings + short history. Returns plain values so nothing detached is
     accessed later from the async context."""
+    existing = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+    is_new_session = existing is None
     get_or_create_session(db, session_id, channel)
     db.add(ChatMessage(session_id=session_id, role="user", content=stored_content, image_url=image_url))
     db.flush()
@@ -167,6 +247,9 @@ def _prepare_turn(
         "system_prompt": bot.system_prompt,
         "model_name": bot.model_name or settings.openai_model,
         "history": history,
+        "is_new_session": is_new_session,
+        "greeting_ar": bot.greeting_ar,
+        "hotline": bot.hotline or DEFAULT_HOTLINE,
     }
 
 
@@ -212,6 +295,9 @@ async def stream_chat_response(
     client_ip: str | None = None,
     request_id: str | None = None,
     cancelled: Callable[[], bool] | None = None,
+    customer_id: int | None = None,
+    customer_name: str | None = None,
+    customer_email: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     if not settings.openai_api_key:
         raise ChatProcessingError("OpenAI API key is not configured")
@@ -227,6 +313,7 @@ async def stream_chat_response(
     system_prompt = prep["system_prompt"]
     model_name = prep["model_name"]
     history = prep["history"]
+    hotline = prep.get("hotline", DEFAULT_HOTLINE)
 
     # Recent turns (excluding the message just stored) let trip retrieval resolve
     # follow-ups that don't name a route, e.g. "the latest 5 trips".
@@ -252,10 +339,61 @@ async def stream_chat_response(
         extra_query=corrected_query,
     )
 
+    # Ticketing intents are handled deterministically (a confirm form / ticket cards
+    # are rendered by the app); the model only writes a one-line intro.
+    ticket_mode: str | None = None
+    ticket_meta: dict | None = None
+    intent = detect_ticket_intent(raw_query)
+    # The customer is in a raise-ticket flow if THIS message is a complaint intent, or
+    # if the IMMEDIATELY PRECEDING user turn was (i.e. the bot just asked them to
+    # describe the problem and this is their answer). We deliberately look only at the
+    # previous turn — not the whole history — so an earlier, already-handled complaint
+    # doesn't hijack a later unrelated question. We also bail if this message clearly
+    # resolved to trip/station/destination data (it's a content query, not a complaint).
+    has_content_result = bool(
+        retrieval_debug.get("trips")
+        or retrieval_debug.get("stations")
+        or retrieval_debug.get("destinations")
+    )
+    user_turns = [m.get("content", "") for m in history if m.get("role") == "user"]
+    prev_user_raise = len(user_turns) >= 2 and detect_ticket_intent(user_turns[-2]) == "raise"
+    in_raise_flow = intent == "raise" or (
+        intent is None and prev_user_raise and not has_content_result
+    )
+    if in_raise_flow:
+        draft = await build_ticket_draft(history, raw_query)
+        if draft.get("ready"):
+            # Enough detail — show the pre-filled confirm form.
+            ticket_mode = "raise"
+            ticket_meta = {
+                "type": "meta",
+                "action": "open_ticket_form",
+                "draft": draft,
+                "logged_in": customer_id is not None,
+                "channel": normalized_channel,
+            }
+        else:
+            # Not enough detail yet — the bot asks what the problem is first.
+            ticket_mode = "raise_collect"
+    elif intent == "check":
+        if customer_id is not None:
+            ticket_mode = "check"
+            tickets_list = await asyncio.to_thread(fetch_ticket_summaries, db, customer_id)
+            ticket_meta = {"type": "meta", "tickets_crm": tickets_list}
+        else:
+            ticket_mode = "login_required"
+            ticket_meta = {"type": "meta", "action": "login_required"}
+
     messages = [
-        {"role": "system", "content": _build_system_prompt(system_prompt, context, raw_query)}
+        {
+            "role": "system",
+            "content": _build_system_prompt(system_prompt, context, raw_query, ticket_mode, hotline),
+        }
     ]
     messages.extend(history)
+
+    if ticket_meta is not None:
+        yield ticket_meta
 
     # Surface the trips SQL only when debug exposure is explicitly enabled
     # (off in production — never leak internal SQL/schema to public chat users).
@@ -286,6 +424,15 @@ async def stream_chat_response(
     completion_tokens = 0
     total_tokens = 0
     log_error_msg: str | None = None
+
+    # Channel-aware greeting: the website greets proactively on page-load (frontend),
+    # but social channels have no page-load — so on the customer's first message we
+    # greet here, as the first part of the assistant's reply.
+    if prep.get("is_new_session") and normalized_channel != DEFAULT_CHAT_CHANNEL:
+        greeting_text = _build_greeting(customer_name, raw_query, prep.get("greeting_ar", "")) + "\n\n"
+        yield {"type": "meta", "ttft_ms": int((time.perf_counter() - started) * 1000)}
+        full_response += greeting_text
+        yield {"type": "token", "content": greeting_text}
 
     create_kwargs: dict = {
         "model": model_name,
@@ -344,6 +491,8 @@ async def stream_chat_response(
             has_image=bool(image_url),
             success=False,
             error_message=log_error_msg,
+            customer_id=customer_id,
+            customer_email=customer_email,
         )
         _fire(
             log_llm_call,
@@ -395,6 +544,8 @@ async def stream_chat_response(
         response_time_sec=elapsed,
         has_image=bool(image_url),
         success=True,
+        customer_id=customer_id,
+        customer_email=customer_email,
     )
     _fire(
         log_llm_call,

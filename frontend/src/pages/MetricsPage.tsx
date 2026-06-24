@@ -17,12 +17,16 @@ import {
   LlmCallLog,
   MetricsCharts,
   MetricsOverview,
+  MetricsUserStat,
+  MetricsUserDetail,
 } from '@/api/client'
 import ChartCard from '@/components/dashboard/ChartCard'
+import DateRangeFilter from '@/components/admin/DateRangeFilter'
+import Modal from '@/components/admin/Modal'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '@/components/admin/Shared'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
-type TabId = 'overview' | 'requests' | 'chat' | 'llm' | 'auth' | 'errors'
+type TabId = 'overview' | 'users' | 'requests' | 'chat' | 'llm' | 'auth' | 'errors'
 
 function formatTime(value: string) {
   return new Date(value).toLocaleString()
@@ -45,7 +49,7 @@ export default function MetricsPage() {
   const { t } = useLanguage()
   const m = t.metrics
   const [tab, setTab] = useState<TabId>('overview')
-  const [days, setDays] = useState(30)
+  const [days] = useState(30)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [page, setPage] = useState(1)
@@ -54,6 +58,10 @@ export default function MetricsPage() {
   const [charts, setCharts] = useState<MetricsCharts | null>(null)
   const [requests, setRequests] = useState<ApiRequestLog[]>([])
   const [chatLogs, setChatLogs] = useState<ChatLogEntry[]>([])
+  const [users, setUsers] = useState<MetricsUserStat[]>([])
+  const [userDetail, setUserDetail] = useState<MetricsUserDetail | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [chatEmail, setChatEmail] = useState('')
   const [llmCalls, setLlmCalls] = useState<LlmCallLog[]>([])
   const [authLogs, setAuthLogs] = useState<AuthLogEntry[]>([])
   const [errors, setErrors] = useState<ErrorLogEntry[]>([])
@@ -87,9 +95,13 @@ export default function MetricsPage() {
     }
 
     const fetchers: Record<Exclude<TabId, 'overview'>, () => Promise<void>> = {
+      users: () => api.getMetricsUsers(pageParams).then((r) => { setUsers(r.items); setTotal(r.total) }),
       requests: () =>
         api.getMetricsRequests(pageParams).then((r) => { setRequests(r.items); setTotal(r.total) }),
-      chat: () => api.getMetricsChatLogs(pageParams).then((r) => { setChatLogs(r.items); setTotal(r.total) }),
+      chat: () =>
+        api
+          .getMetricsChatLogs(chatEmail.trim() ? { ...pageParams, customer_email: chatEmail.trim() } : pageParams)
+          .then((r) => { setChatLogs(r.items); setTotal(r.total) }),
       llm: () => api.getMetricsLlmCalls(pageParams).then((r) => { setLlmCalls(r.items); setTotal(r.total) }),
       auth: () => api.getMetricsAuthLogs(pageParams).then((r) => { setAuthLogs(r.items); setTotal(r.total) }),
       errors: () => api.getMetricsErrors(pageParams).then((r) => { setErrors(r.items); setTotal(r.total) }),
@@ -98,7 +110,13 @@ export default function MetricsPage() {
     fetchers[tab]()
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [tab, effFrom, effTo, page])
+  }, [tab, effFrom, effTo, page, chatEmail])
+
+  function openUserDetail(customerId: number) {
+    setDetailOpen(true)
+    setUserDetail(null)
+    api.getMetricsUserDetail(customerId).then(setUserDetail).catch(() => setDetailOpen(false))
+  }
 
   useEffect(() => {
     load()
@@ -108,6 +126,7 @@ export default function MetricsPage() {
 
   const tabs: { id: TabId; label: string }[] = [
     { id: 'overview', label: m.tabs.overview },
+    { id: 'users', label: m.tabs.users },
     { id: 'requests', label: m.tabs.requests },
     { id: 'chat', label: m.tabs.chat },
     { id: 'llm', label: m.tabs.llm },
@@ -128,36 +147,12 @@ export default function MetricsPage() {
     <div className="fade-in space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <PageHeader title={m.title} subtitle={m.subtitle} />
-        <div className="flex flex-wrap items-end gap-2 shrink-0">
-          <button
-            type="button"
-            className={`px-3 py-1.5 rounded-lg text-sm border ${!dateFrom && !dateTo && days === 7 ? 'bg-[var(--color-brand-primary)] text-white border-transparent' : 'border-[var(--color-border-default)]'}`}
-            onClick={() => { setDays(7); setDateFrom(''); setDateTo('') }}
-          >
-            {m.days7}
-          </button>
-          <button
-            type="button"
-            className={`px-3 py-1.5 rounded-lg text-sm border ${!dateFrom && !dateTo && days === 30 ? 'bg-[var(--color-brand-primary)] text-white border-transparent' : 'border-[var(--color-border-default)]'}`}
-            onClick={() => { setDays(30); setDateFrom(''); setDateTo('') }}
-          >
-            {m.days30}
-          </button>
-          <div>
-            <label className="block text-[10px] text-[var(--color-text-muted)] mb-0.5">{m.dateFrom}</label>
-            <input type="date" className="input-field ltr py-1 text-sm" value={dateFrom} max={dateTo || undefined}
-              onChange={(e) => setDateFrom(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-[10px] text-[var(--color-text-muted)] mb-0.5">{m.dateTo}</label>
-            <input type="date" className="input-field ltr py-1 text-sm" value={dateTo} min={dateFrom || undefined}
-              onChange={(e) => setDateTo(e.target.value)} />
-          </div>
-          {(dateFrom || dateTo) && (
-            <button type="button" className="btn-ghost text-sm" onClick={() => { setDateFrom(''); setDateTo('') }}>
-              {m.clearDates}
-            </button>
-          )}
+        <div className="shrink-0">
+          <DateRangeFilter
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t2) => { setDateFrom(f); setDateTo(t2) }}
+          />
         </div>
       </div>
 
@@ -253,6 +248,40 @@ export default function MetricsPage() {
         </>
       ) : null}
 
+      {tab === 'users' && !loading ? (
+        users.length === 0 ? (
+          <EmptyState message={t.common.noData} />
+        ) : (
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--color-border-default)] text-left">
+                  {[m.user, m.customerEmail, m.chatTurns, m.totalTokens, m.tickets, m.lastSeen].map((h) => (
+                    <th key={h} className="px-3 py-2 font-medium text-[var(--color-text-muted)] whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr
+                    key={u.customer_id}
+                    className="border-b border-[var(--color-border-default)] last:border-0 hover:bg-[var(--color-surface-muted)] cursor-pointer"
+                    onClick={() => openUserDetail(u.customer_id)}
+                  >
+                    <td className="px-3 py-2 whitespace-nowrap font-medium text-[var(--color-brand-primary)]">{u.full_name || `#${u.customer_id}`}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" dir="ltr">{u.customer_email ?? '—'}</td>
+                    <td className="px-3 py-2">{u.chat_turns}</td>
+                    <td className="px-3 py-2">{Number(u.total_tokens).toLocaleString()}</td>
+                    <td className="px-3 py-2">{u.tickets}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{u.last_seen ? formatTime(u.last_seen) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : null}
+
       {tab === 'requests' && !loading ? (
         requests.length === 0 ? (
           <EmptyState message={t.common.noData} />
@@ -272,21 +301,30 @@ export default function MetricsPage() {
       ) : null}
 
       {tab === 'chat' && !loading ? (
-        chatLogs.length === 0 ? (
-          <EmptyState message={t.common.noData} />
-        ) : (
-          <LogTable
-            headers={[m.time, m.session, m.channel, m.tokens, m.latency, m.success]}
+        <>
+          <input
+            className="input-field max-w-xs mb-3"
+            placeholder={m.customerEmail}
+            value={chatEmail}
+            onChange={(e) => { setPage(1); setChatEmail(e.target.value) }}
+          />
+          {chatLogs.length === 0 ? (
+            <EmptyState message={t.common.noData} />
+          ) : (
+            <LogTable
+              headers={[m.time, m.session, m.customerEmail, m.channel, m.tokens, m.latency, m.success]}
             rows={chatLogs.map((r) => [
               formatTime(r.created_at),
               truncate(r.session_id, 12),
+              r.customer_email ?? '—',
               r.channel ?? '—',
               String(r.total_tokens),
               r.response_time_sec?.toFixed(2) ?? '—',
               r.success ? t.common.yes : t.common.no,
             ])}
-          />
-        )
+            />
+          )}
+        </>
       ) : null}
 
       {tab === 'llm' && !loading ? (
@@ -361,6 +399,68 @@ export default function MetricsPage() {
           </button>
         </div>
       ) : null}
+
+      <Modal
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        title={userDetail?.customer.full_name || m.user}
+      >
+        {!userDetail ? (
+          <LoadingState />
+        ) : (
+          <div className="space-y-4 text-sm">
+            <div className="text-[var(--color-text-muted)]">
+              <div dir="ltr">{userDetail.customer.email}</div>
+              <div dir="ltr">{userDetail.customer.phone}</div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                { label: m.chatTurns, value: userDetail.chat_turns },
+                { label: m.totalTokens, value: Number(userDetail.total_tokens).toLocaleString() },
+                { label: m.session, value: userDetail.sessions },
+                { label: m.tickets, value: userDetail.tickets_total },
+              ].map((c) => (
+                <div key={c.label} className="card p-2 text-center">
+                  <div className="text-xs text-[var(--color-text-muted)]">{c.label}</div>
+                  <div className="text-lg font-bold" style={{ color: 'var(--color-brand-primary)' }}>{c.value}</div>
+                </div>
+              ))}
+            </div>
+            <div className="text-xs text-[var(--color-text-muted)]">
+              {m.lastSeen}: {userDetail.last_seen ? formatTime(userDetail.last_seen) : '—'}
+            </div>
+
+            {userDetail.recent_tickets.length > 0 && (
+              <div>
+                <div className="font-semibold mb-1">{t.crm.title}</div>
+                <div className="space-y-1">
+                  {userDetail.recent_tickets.map((tk) => (
+                    <div key={tk.ref_number} className="flex items-center justify-between gap-2 border-b border-[var(--color-border-default)] py-1">
+                      <span className="font-mono text-xs">{tk.ref_number}</span>
+                      <span className="flex-1 truncate">{tk.subject}</span>
+                      <span className={`ticket-status ticket-status-${tk.status}`}>{tk.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {userDetail.recent_chats.length > 0 && (
+              <div>
+                <div className="font-semibold mb-1">{m.tabs.chat}</div>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {userDetail.recent_chats.map((ch, i) => (
+                    <div key={i} className="border-b border-[var(--color-border-default)] pb-1">
+                      <div className="text-[10px] text-[var(--color-text-muted)]">{ch.created_at ? formatTime(ch.created_at) : ''} · {ch.channel ?? '—'}</div>
+                      <div dir="auto"><b>›</b> {ch.user_message || '—'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

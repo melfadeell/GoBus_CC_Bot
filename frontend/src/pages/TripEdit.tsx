@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { api, Route, Trip } from '@/api/client'
+import { api, Route, Station, Trip } from '@/api/client'
 import ToggleSwitch from '@/components/admin/ToggleSwitch'
 import { LoadingState, PageHeader } from '@/components/admin/Shared'
 import { useLanguage } from '@/i18n/LanguageProvider'
@@ -24,12 +24,14 @@ export default function TripEditPage() {
   const navigate = useNavigate()
   const isNew = id === 'new'
   const [routes, setRoutes] = useState<Route[]>([])
+  const [stations, setStations] = useState<Station[]>([])
   const [form, setForm] = useState<Trip>(empty)
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     api.getRoutes().then(setRoutes)
+    api.getStations({ page_size: '300' }).then((r) => setStations(r.items)).catch(() => {})
     if (!isNew && id) api.getTrip(Number(id)).then(setForm).finally(() => setLoading(false))
   }, [id, isNew])
 
@@ -55,6 +57,20 @@ export default function TripEditPage() {
           <select className="input-field" value={form.route_id} onChange={(e) => setForm({ ...form, route_id: Number(e.target.value) })}>
             {routes.map((r) => <option key={r.id} value={r.id}>{r.origin} → {r.destination}</option>)}
           </select>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div><label className="block text-sm mb-1 font-medium">{t.trips.departureStation}</label>
+            <select className="input-field" value={form.departure_station_id ?? ''} onChange={(e) => setForm({ ...form, departure_station_id: e.target.value ? Number(e.target.value) : null })}>
+              <option value="">{t.trips.selectStation}</option>
+              {stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div><label className="block text-sm mb-1 font-medium">{t.trips.arrivalStation}</label>
+            <select className="input-field" value={form.arrival_station_id ?? ''} onChange={(e) => setForm({ ...form, arrival_station_id: e.target.value ? Number(e.target.value) : null })}>
+              <option value="">{t.trips.selectStation}</option>
+              {stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div><label className="block text-sm mb-1 font-medium">{t.trips.date}</label><input className="input-field ltr" type="date" value={form.trip_date} onChange={(e) => setForm({ ...form, trip_date: e.target.value })} required /></div>

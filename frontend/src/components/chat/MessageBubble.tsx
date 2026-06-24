@@ -4,7 +4,10 @@ import { Bot, Check, Copy, Database, Download, MapPin, User, Zap } from 'lucide-
 import ChatMessageContent from './ChatMessageContent'
 import StationCardList from './StationCard'
 import TripsTable from './TripsTable'
+import TicketForm from './TicketForm'
+import TicketCardList from './TicketCardList'
 import type { StationCardData, TripRow } from '@/hooks/useChatStream'
+import type { TicketDraft, TicketSummary } from '@/api/client'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
 interface MessageBubbleProps {
@@ -17,6 +20,11 @@ interface MessageBubbleProps {
   stations?: StationCardData[]
   destinations?: string[]
   trips?: TripRow[]
+  ticketDraft?: TicketDraft
+  ticketLoggedIn?: boolean
+  ticketsCrm?: TicketSummary[]
+  ticketChannel?: string
+  ticketSessionId?: string | null
 }
 
 const _isSeparatorRow = (line: string) =>
@@ -94,7 +102,7 @@ function TypingIndicator() {
   )
 }
 
-export default function MessageBubble({ role, content, isTyping, imageUrl, sql, ttftMs, stations, destinations, trips }: MessageBubbleProps) {
+export default function MessageBubble({ role, content, isTyping, imageUrl, sql, ttftMs, stations, destinations, trips, ticketDraft, ticketLoggedIn, ticketsCrm, ticketChannel, ticketSessionId }: MessageBubbleProps) {
   const isUser = role === 'user'
   const { t } = useLanguage()
   const bubbleRef = useRef<HTMLDivElement>(null)
@@ -206,6 +214,17 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
                     </span>
                   ))}
                 </div>
+              ) : null}
+              {!isUser && ticketDraft ? (
+                <TicketForm
+                  draft={ticketDraft}
+                  loggedIn={!!ticketLoggedIn}
+                  channel={ticketChannel || 'website'}
+                  sessionId={ticketSessionId ?? null}
+                />
+              ) : null}
+              {!isUser && ticketsCrm && ticketsCrm.length > 0 ? (
+                <TicketCardList tickets={ticketsCrm} />
               ) : null}
             </>
           )}

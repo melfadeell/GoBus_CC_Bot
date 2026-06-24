@@ -72,14 +72,15 @@ def _real_token_split(msg_query) -> tuple[int, int, int]:
 
 
 def _session_query(db: Session, channel: str | None):
-    q = db.query(ChatSession)
+    # Exclude any residual seeded demo sessions so counts are real-only.
+    q = db.query(ChatSession).filter(~ChatSession.session_id.like(DEMO_SESSION_PREFIX))
     if channel:
         q = q.filter(ChatSession.channel == channel)
     return q
 
 
 def _message_query(db: Session, channel: str | None):
-    q = db.query(ChatMessage)
+    q = db.query(ChatMessage).filter(~ChatMessage.session_id.like(DEMO_SESSION_PREFIX))
     if channel:
         q = q.join(ChatSession, ChatSession.session_id == ChatMessage.session_id).filter(
             ChatSession.channel == channel

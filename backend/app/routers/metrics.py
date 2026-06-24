@@ -5,9 +5,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_admin
+from app.database import get_db
 from app.logs_database import get_logs_db
 from app.logs_models import ApiRequestLog, AuthLog, ChatLog, ErrorLog, LlmCallLog
-from app.models.models import AdminUser
+from app.models.models import AdminUser, Customer, Ticket
 from app.schemas.schemas import (
     ApiRequestLogOut,
     AuthLogOut,
@@ -17,6 +18,7 @@ from app.schemas.schemas import (
     MetricsCharts,
     MetricsDailyPoint,
     MetricsOverview,
+    MetricsUserStat,
     PaginatedResponse,
 )
 
@@ -166,12 +168,151 @@ def metrics_requests(
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
+@router.get("/users", response_model=PaginatedResponse[MetricsUserStat])
+def metrics_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    db: Session = Depends(get_logs_db),
+    main_db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """Per-customer traceability: chat activity (logs DB) + ticket counts + profile
+    (main DB), for logged-in customers (customer_id present on the chat turn)."""
+    q = (
+        db.query(
+            ChatLog.customer_id,
+            func.max(ChatLog.customer_email).label("email"),
+            func.count(ChatLog.id).label("turns"),
+            func.coalesce(func.sum(ChatLog.total_tokens), 0).label("tokens"),
+            func.max(ChatLog.created_at).label("last_seen"),
+        )
+        .filter(ChatLog.customer_id.isnot(None))
+        .group_by(ChatLog.customer_id)
+    )
+    q = _apply_created_filter(q, ChatLog, _parse_date(date_from), _parse_date(date_to))
+    q = q.order_by(func.max(ChatLog.created_at).desc())
+
+    rows = q.all()
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size : (page - 1) * page_size + page_size]
+
+    cust_ids = [r[0] for r in page_rows]
+    profiles = {
+        c.id: c
+        for c in main_db.query(Customer).filter(Customer.id.in_(cust_ids)).all()
+    } if cust_ids else {}
+    ticket_counts = dict(
+        main_db.query(Ticket.customer_id, func.count(Ticket.id))
+        .filter(Ticket.customer_id.in_(cust_ids))
+        .group_by(Ticket.customer_id)
+        .all()
+    ) if cust_ids else {}
+
+    items = [
+        MetricsUserStat(
+            customer_id=cid,
+            customer_email=email,
+            full_name=profiles[cid].full_name if cid in profiles else None,
+            chat_turns=int(turns or 0),
+            total_tokens=int(tokens or 0),
+            tickets=int(ticket_counts.get(cid, 0)),
+            last_seen=last_seen,
+        )
+        for (cid, email, turns, tokens, last_seen) in page_rows
+    ]
+    return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/users/{customer_id}")
+def metrics_user_detail(
+    customer_id: int,
+    db: Session = Depends(get_logs_db),
+    main_db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """Full activity trace for one customer: profile + totals + recent chats + tickets."""
+    customer = main_db.query(Customer).filter(Customer.id == customer_id).first()
+
+    agg = (
+        db.query(
+            func.count(ChatLog.id),
+            func.coalesce(func.sum(ChatLog.total_tokens), 0),
+            func.count(func.distinct(ChatLog.session_id)),
+            func.min(ChatLog.created_at),
+            func.max(ChatLog.created_at),
+        )
+        .filter(ChatLog.customer_id == customer_id)
+        .one()
+    )
+    recent_chats = (
+        db.query(ChatLog)
+        .filter(ChatLog.customer_id == customer_id)
+        .order_by(ChatLog.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    tickets = (
+        main_db.query(Ticket)
+        .filter(Ticket.customer_id == customer_id)
+        .order_by(Ticket.created_at.desc())
+        .all()
+    )
+    by_status: dict[str, int] = {}
+    for tk in tickets:
+        by_status[tk.status] = by_status.get(tk.status, 0) + 1
+
+    return {
+        "customer": {
+            "id": customer.id if customer else customer_id,
+            "full_name": customer.full_name if customer else None,
+            "email": customer.email if customer else None,
+            "phone": customer.phone if customer else None,
+            "created_at": customer.created_at.isoformat() if customer and customer.created_at else None,
+            "last_login_at": customer.last_login_at.isoformat()
+            if customer and customer.last_login_at
+            else None,
+        },
+        "chat_turns": int(agg[0] or 0),
+        "total_tokens": int(agg[1] or 0),
+        "sessions": int(agg[2] or 0),
+        "first_seen": agg[3].isoformat() if agg[3] else None,
+        "last_seen": agg[4].isoformat() if agg[4] else None,
+        "tickets_total": len(tickets),
+        "tickets_by_status": by_status,
+        "recent_chats": [
+            {
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "channel": r.channel,
+                "user_message": (r.user_message or "")[:200],
+                "ai_response": (r.ai_response or "")[:200],
+                "total_tokens": r.total_tokens,
+                "success": r.success,
+            }
+            for r in recent_chats
+        ],
+        "recent_tickets": [
+            {
+                "ref_number": tk.ref_number,
+                "subject": tk.subject,
+                "status": tk.status,
+                "priority": tk.priority,
+                "created_at": tk.created_at.isoformat() if tk.created_at else None,
+            }
+            for tk in tickets[:20]
+        ],
+    }
+
+
 @router.get("/chat-logs", response_model=PaginatedResponse[ChatLogOut])
 def metrics_chat_logs(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     channel: str | None = Query(None),
     session_id: str | None = Query(None),
+    customer_email: str | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     db: Session = Depends(get_logs_db),
@@ -182,6 +323,8 @@ def metrics_chat_logs(
         query = query.filter(ChatLog.channel == channel)
     if session_id:
         query = query.filter(ChatLog.session_id == session_id)
+    if customer_email:
+        query = query.filter(ChatLog.customer_email.like(f"%{customer_email.strip()}%"))
     query = _apply_created_filter(query, ChatLog, _parse_date(date_from), _parse_date(date_to))
 
     total = query.count()

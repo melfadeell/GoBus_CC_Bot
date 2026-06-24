@@ -56,11 +56,26 @@ def is_database_seeded(db: Session) -> bool:
 
 def bootstrap_logs_database() -> None:
     """Create logs DB and tables."""
+    from sqlalchemy import inspect
     from app.logs_database import LogsBase, get_logs_engine
     import app.logs_models  # noqa: F401 — register models
 
     ensure_mysql_database(settings.logs_database_url)
-    LogsBase.metadata.create_all(bind=get_logs_engine())
+    logs_engine = get_logs_engine()
+    LogsBase.metadata.create_all(bind=logs_engine)
+
+    # Idempotent column adds for existing chat_logs tables (per-customer traceability).
+    try:
+        existing = {c["name"] for c in inspect(logs_engine).get_columns("chat_logs")}
+        with logs_engine.begin() as conn:
+            if "customer_id" not in existing:
+                conn.execute(text("ALTER TABLE chat_logs ADD COLUMN customer_id INT NULL"))
+                conn.execute(text("CREATE INDEX ix_chat_logs_customer ON chat_logs (customer_id)"))
+            if "customer_email" not in existing:
+                conn.execute(text("ALTER TABLE chat_logs ADD COLUMN customer_email VARCHAR(255) NULL"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chat_logs traceability migration skipped: %s", exc)
+
     logger.info("Logs database tables are ready")
 
 

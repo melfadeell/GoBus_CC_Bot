@@ -5,6 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import create_access_token, get_current_admin, verify_password
+from app.config import get_settings
 from app.core.rate_limit import get_client_ip, limiter
 from app.database import get_db
 from app.logs_database import get_logs_session_factory
@@ -14,14 +15,12 @@ from app.schemas.schemas import LoginRequest, TokenResponse
 from app.services.logs_writer import log_auth
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-LOCKOUT_THRESHOLD = 5
-LOCKOUT_WINDOW_MINUTES = 15
+settings = get_settings()
 
 
 def _recent_failed_logins(email: str, client_ip: str | None) -> int:
     """Count failed logins for this email or IP within the lockout window."""
-    since = datetime.now(timezone.utc) - timedelta(minutes=LOCKOUT_WINDOW_MINUTES)
+    since = datetime.now(timezone.utc) - timedelta(minutes=settings.login_lockout_window_minutes)
     logs_db = get_logs_session_factory()()
     try:
         q = logs_db.query(func.count(AuthLog.id)).filter(
@@ -39,12 +38,12 @@ def _recent_failed_logins(email: str, client_ip: str | None) -> int:
 
 
 @router.post("/login", response_model=TokenResponse)
-@limiter.limit("10/minute")
+@limiter.limit(settings.rate_limit_auth)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     client_ip = get_client_ip(request)
 
     # Temporary lockout after repeated failures (per email/IP within the window).
-    if _recent_failed_logins(payload.email, client_ip) >= LOCKOUT_THRESHOLD:
+    if _recent_failed_logins(payload.email, client_ip) >= settings.login_lockout_threshold:
         log_auth(
             email=payload.email,
             action="login_locked",

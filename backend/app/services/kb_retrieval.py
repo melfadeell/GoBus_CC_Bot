@@ -6,6 +6,7 @@ from datetime import date
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.constants import CITY_STATION_NAMES
 from app.models.models import Destination, KbArticle, KbCategory, Route, Service, Station, Trip
 from app.services.reference_cache import (
     active_destinations,
@@ -163,8 +164,6 @@ def _expand_search_terms(query: str, db: Session) -> list[str]:
     for station in active_stations():
         if station.name in query:
             terms.append(station.name)
-        if station.city and station.city in query:
-            terms.append(station.city)
 
     for dest in active_destinations():
         name = dest.name_ar
@@ -464,6 +463,17 @@ def _compile_sql(db: Session, query) -> str:
         return ""
 
 
+def _term_matches(nt: str, text_norm: str) -> bool:
+    """Match a normalized term in text. Short single-word terms (< 5 chars) must
+    match on a word boundary so generic words like "بين"/"اللي" don't substring-hit
+    inside longer words (e.g. "مكتبين"); longer terms / phrases allow substring."""
+    if not nt:
+        return False
+    if len(nt) >= 5 or " " in nt:
+        return nt in text_norm
+    return re.search(rf"(?<!\w){re.escape(nt)}(?!\w)", text_norm) is not None
+
+
 def _query_matches_station(db: Session, query_text: str, search_terms: list[str]) -> bool:
     """True when the query names a known station — by name OR address/area.
 
@@ -478,8 +488,8 @@ def _query_matches_station(db: Session, query_text: str, search_terms: list[str]
     norm_terms = [normalize_arabic(t) for t in terms]
     for station in active_stations():
         norm_name = normalize_arabic(station.name)
-        norm_addr = normalize_arabic(f"{station.description or ''} {station.city or ''}")
-        if any(nt and (nt in norm_name or nt in norm_addr) for nt in norm_terms):
+        norm_addr = normalize_arabic(station.description or "")
+        if any(_term_matches(nt, norm_name) or _term_matches(nt, norm_addr) for nt in norm_terms):
             return True
     return False
 
@@ -538,7 +548,11 @@ def _fetch_trip_blocks(
     query = (
         db.query(Trip)
         .join(Route)
-        .options(joinedload(Trip.route))
+        .options(
+            joinedload(Trip.route),
+            joinedload(Trip.departure_station),
+            joinedload(Trip.arrival_station),
+        )
         .filter(Route.is_active.is_(True))
         .filter(Trip.route_id.in_(route_ids))
         .filter(Trip.trip_date >= date.today())
@@ -582,6 +596,8 @@ def _fetch_trip_blocks(
             {
                 "origin": t.route.origin,
                 "destination": t.route.destination,
+                "departure_station": t.departure_station.name if t.departure_station else None,
+                "arrival_station": t.arrival_station.name if t.arrival_station else None,
                 "date": t.trip_date.isoformat(),
                 "departure": t.departure_time.strftime("%H:%M"),
                 "arrival": t.arrival_time.strftime("%H:%M"),
@@ -697,6 +713,11 @@ _STATION_SEARCH_STOPWORDS = {
         "الاقرب", "الأقرب", "اقرب", "أقرب", "قريب", "الى", "إلى", "في", "من", "لا", "يوجد",
         "station", "stations", "nearest", "closest", "near", "the", "to", "in",
         "on", "is", "there", "map", "location", "where", "street", "gobus",
+        # Generic question/conjunction words + service/class terms that are NOT stations.
+        "بين", "ايه", "إيه", "الفرق", "فرق", "ماهو", "ما", "هو", "هي", "عايز", "عاوز",
+        "standard", "elite", "business", "gomini", "golemo", "difference", "between",
+        "class", "classes", "service", "services", "price", "prices", "سعر", "اسعار", "فئات", "فئة",
+        "اتوبيس", "الاتوبيس", "الأتوبيس", "اوتوبيس", "الاوتوبيس", "اتوبيسات", "المتاحة", "متاح", "متاحة",
     )
 }
 
@@ -739,19 +760,33 @@ def _fetch_station_blocks(
         return []
 
     # Match in Python with Arabic normalization (handles ة/ه, alef variants etc.
-    # that exact SQL LIKE misses). Prefer name matches; fall back to address/city.
+    # that exact SQL LIKE misses). Prefer name matches; then the representative
+    # station for a named city; only then fall back to an address-text match.
     norm_terms = [normalize_arabic(t) for t in terms]
     name_matches: list[Station] = []
     addr_matches: list[Station] = []
     for station in active_stations():
         norm_name = normalize_arabic(station.name)
-        norm_addr = normalize_arabic(f"{station.description or ''} {station.city or ''}")
-        if any(nt and nt in norm_name for nt in norm_terms):
+        norm_addr = normalize_arabic(station.description or "")
+        if any(_term_matches(nt, norm_name) for nt in norm_terms):
             name_matches.append(station)
-        elif any(nt and nt in norm_addr for nt in norm_terms):
+        elif any(_term_matches(nt, norm_addr) for nt in norm_terms):
             addr_matches.append(station)
 
-    stations = (name_matches or addr_matches)[:limit]
+    # City-level queries ("the Alexandria station") rarely match a station NAME
+    # (stations are area-named). Map the city to its main station so we don't fall
+    # through to an unrelated station that merely mentions the city in its address.
+    city_matches: list[Station] = []
+    if not name_matches:
+        mapped_names = {
+            CITY_STATION_NAMES[city]
+            for city in CITY_STATION_NAMES
+            if any(nt and normalize_arabic(city) in nt for nt in norm_terms)
+        }
+        if mapped_names:
+            city_matches = [s for s in active_stations() if s.name in mapped_names]
+
+    stations = (name_matches or city_matches or addr_matches)[:limit]
     if not stations:
         return []
 
@@ -764,20 +799,22 @@ def _fetch_station_blocks(
                 "address": _clean_station_address(s.description),
                 "working_hours": s.working_hours or "",
                 "map_url": s.map_url or "",
-                "city": s.city or "",
             }
             for s in stations
         ]
 
-    # Minimal text for the LLM: just the station name(s). The full details are
-    # delivered to the UI as a card (debug["stations"]), so we deliberately do NOT
-    # give the model the address/hours/map — that prevents it from duplicating the
-    # card in its text reply.
+    # The full station details (address, working hours, map) are rendered to the user
+    # as a card from debug["stations"]. We don't put them in the model text (so it
+    # can't duplicate or mangle them) — but the model MUST treat them as available and
+    # never refuse, since the user can see the card right below the reply.
     names = "، ".join(s.name for s in stations)
     return [
-        f"[Stations] Matching station(s): {names}. The app shows their full details "
-        "(address, working hours, map) to the user as a card — reply with only a short "
-        "one-line intro and do NOT list the address, hours, or map link yourself."
+        f"[Stations] The full details for {names} (address, working hours, and a map "
+        "link) ARE available and are shown to the user as a card directly below your "
+        "reply. Answer affirmatively with ONE short friendly line that points to it "
+        "(e.g. \"Here are the station details:\" / \"تفضل تفاصيل المحطة:\"). Do NOT repeat "
+        "the address/hours/map in your text. NEVER say you can't provide, don't have, or "
+        "to check the app for the address — it is already displayed in the card."
     ]
 
 

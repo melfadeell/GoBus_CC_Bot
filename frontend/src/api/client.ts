@@ -1,4 +1,5 @@
 const TOKEN_KEY = 'gobus_admin_token'
+const CUSTOMER_TOKEN_KEY = 'gobus_customer_token'
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
@@ -10,6 +11,33 @@ export function setToken(token: string) {
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
+}
+
+// --- End-customer auth (separate from admin) ---
+export function getCustomerToken(): string | null {
+  return localStorage.getItem(CUSTOMER_TOKEN_KEY)
+}
+
+export function setCustomerToken(token: string) {
+  localStorage.setItem(CUSTOMER_TOKEN_KEY, token)
+}
+
+export function clearCustomerToken() {
+  localStorage.removeItem(CUSTOMER_TOKEN_KEY)
+}
+
+// Single-source hotline: fetched once from the backend (BotSettings.hotline) and
+// shared so the header + message bolding stay in sync with the admin-set value.
+export let runtimeHotline = '19567'
+export function setRuntimeHotline(h: string) {
+  if (h) runtimeHotline = h
+}
+export async function fetchPublicInfo(): Promise<{ greeting: string; hotline: string }> {
+  const res = await fetch('/api/bot-settings/public/info')
+  if (!res.ok) throw new Error('Failed to load bot info')
+  const data = (await res.json()) as { greeting: string; hotline: string }
+  if (data.hotline) setRuntimeHotline(data.hotline)
+  return data
 }
 
 export class ApiError extends Error {
@@ -59,6 +87,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
+  getAdminMe: () => request<{ email: string; id: number }>('/api/auth/me'),
 
   getStats: (params?: { channel?: string; date_from?: string; date_to?: string }) => {
     const q = new URLSearchParams()
@@ -186,6 +215,182 @@ export const api = {
     request<Paginated<AuthLogEntry>>(`/api/metrics/auth-logs?${new URLSearchParams(params || '')}`),
   getMetricsErrors: (params?: Record<string, string>) =>
     request<Paginated<ErrorLogEntry>>(`/api/metrics/errors?${new URLSearchParams(params || '')}`),
+  getMetricsUsers: (params?: Record<string, string>) =>
+    request<Paginated<MetricsUserStat>>(`/api/metrics/users?${new URLSearchParams(params || '')}`),
+  getMetricsUserDetail: (customerId: number) =>
+    request<MetricsUserDetail>(`/api/metrics/users/${customerId}`),
+
+  // Admin CRM / tickets
+  getAdminTickets: (params?: Record<string, string>) =>
+    request<Paginated<TicketAdminSummary>>(`/api/admin/tickets?${new URLSearchParams(params || '')}`),
+  getAdminTicket: (id: number) => request<TicketDetail>(`/api/admin/tickets/${id}`),
+  updateAdminTicket: (id: number, data: Partial<TicketUpdate>) =>
+    request<TicketDetail>(`/api/admin/tickets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  replyAdminTicket: (id: number, body: string) =>
+    request<TicketDetail>(`/api/admin/tickets/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+}
+
+export interface TicketAdminSummary {
+  id: number
+  ref_number: string
+  subject: string
+  category: string
+  status: string
+  priority: string
+  priority_auto: string | null
+  channel: string
+  customer_id: number | null
+  guest_name: string | null
+  guest_email: string | null
+  assigned_admin_id: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TicketUpdate {
+  status: string
+  priority: string
+  assigned_admin_id: number | null
+}
+
+// --- Customer + ticket API (public chat side; uses the customer token, never
+//     redirects to the admin login on 401) ---
+async function customerRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getCustomerToken()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(path, { ...options, headers })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    if (res.status === 401 && token) clearCustomerToken()
+    throw new ApiError(formatDetail(err.detail), res.status)
+  }
+  if (res.status === 204) return undefined as T
+  return res.json()
+}
+
+export const customerApi = {
+  register: (data: CustomerRegisterData) =>
+    customerRequest<{ access_token: string }>('/api/customer/register', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  login: (email: string, password: string) =>
+    customerRequest<{ access_token: string }>('/api/customer/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  me: () => customerRequest<CustomerProfile>('/api/customer/me'),
+  updateProfile: (data: { full_name: string; phone: string; email: string }) =>
+    customerRequest<CustomerProfile>('/api/customer/me', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  changePassword: (data: { old_password: string; new_password: string; confirm_password: string }) =>
+    customerRequest<{ ok: boolean }>('/api/customer/password', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  requestOtp: (email: string, purpose = 'ticket_create') =>
+    customerRequest<{ sent: boolean }>('/api/tickets/otp/request', {
+      method: 'POST',
+      body: JSON.stringify({ email, purpose }),
+    }),
+  verifyOtp: (email: string, code: string, purpose = 'ticket_create') =>
+    customerRequest<{ verified_token: string }>('/api/tickets/otp/verify', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, purpose }),
+    }),
+  createTicket: (data: TicketCreatePayload) =>
+    customerRequest<TicketDetail>('/api/tickets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  listMyTickets: () => customerRequest<TicketSummary[]>('/api/tickets'),
+  getTicket: (ref: string, verifiedToken?: string) => {
+    const q = verifiedToken ? `?verified_token=${encodeURIComponent(verifiedToken)}` : ''
+    return customerRequest<TicketDetail>(`/api/tickets/${ref}${q}`)
+  },
+}
+
+export interface CustomerRegisterData {
+  full_name: string
+  phone: string
+  email: string
+  password: string
+  confirm_password: string
+}
+
+export interface CustomerProfile {
+  id: number
+  full_name: string
+  phone: string
+  email: string
+}
+
+export interface TicketDraft {
+  category: string
+  priority: string
+  subject: string
+  description: string
+}
+
+export interface TicketCreatePayload {
+  subject: string
+  description: string
+  category: string
+  priority?: string
+  priority_auto?: string
+  channel?: string
+  session_id?: string | null
+  guest_name?: string
+  guest_email?: string
+  guest_phone?: string
+  verified_token?: string
+}
+
+export interface TicketSummary {
+  ref_number: string
+  subject: string
+  category: string
+  status: string
+  priority: string
+  created_at: string
+}
+
+export interface TicketMessageItem {
+  id: number
+  author_type: string
+  author_id: number | null
+  body: string
+  attachment_url: string | null
+  created_at: string
+}
+
+export interface TicketDetail extends TicketSummary {
+  id: number
+  customer_id: number | null
+  guest_name: string | null
+  guest_email: string | null
+  guest_phone: string | null
+  channel: string
+  description: string
+  priority_auto: string | null
+  assigned_admin_id: number | null
+  session_id: string | null
+  updated_at: string
+  resolved_at: string | null
+  messages: TicketMessageItem[]
 }
 
 export interface Paginated<T> {
@@ -240,7 +445,7 @@ export const CHAT_CHANNELS = [
   'website',
 ] as const
 
-export const DASHBOARD_CHANNELS = ['poc', ...CHAT_CHANNELS] as const
+export const DASHBOARD_CHANNELS = [...CHAT_CHANNELS] as const
 
 export type ChatChannel = (typeof CHAT_CHANNELS)[number]
 
@@ -272,7 +477,6 @@ export interface Station {
   closes_at?: string | null
   map_url?: string | null
   map_text?: string | null
-  city?: string | null
   is_active: boolean
 }
 
@@ -306,7 +510,11 @@ export interface Trip {
   price_egp: number
   is_bookable: boolean
   status: string
+  departure_station_id?: number | null
+  arrival_station_id?: number | null
   route?: Route
+  departure_station_name?: string | null
+  arrival_station_name?: string | null
 }
 
 export interface Service {
@@ -394,6 +602,8 @@ export interface ChatLogEntry {
   session_id: string
   channel: string | null
   client_ip: string | null
+  customer_id: number | null
+  customer_email: string | null
   user_message: string | null
   ai_response: string | null
   model: string | null
@@ -438,4 +648,47 @@ export interface ErrorLogEntry {
   message: string | null
   stack_trace: string | null
   created_at: string
+}
+
+export interface MetricsUserStat {
+  customer_id: number
+  customer_email: string | null
+  full_name: string | null
+  chat_turns: number
+  total_tokens: number
+  tickets: number
+  last_seen: string | null
+}
+
+export interface MetricsUserDetail {
+  customer: {
+    id: number
+    full_name: string | null
+    email: string | null
+    phone: string | null
+    created_at: string | null
+    last_login_at: string | null
+  }
+  chat_turns: number
+  total_tokens: number
+  sessions: number
+  first_seen: string | null
+  last_seen: string | null
+  tickets_total: number
+  tickets_by_status: Record<string, number>
+  recent_chats: {
+    created_at: string | null
+    channel: string | null
+    user_message: string
+    ai_response: string
+    total_tokens: number
+    success: boolean
+  }[]
+  recent_tickets: {
+    ref_number: string
+    subject: string
+    status: string
+    priority: string
+    created_at: string | null
+  }[]
 }

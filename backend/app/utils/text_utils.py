@@ -73,6 +73,58 @@ def extract_working_hours(description: str) -> str | None:
     return None
 
 
+_AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def _to_12h(hour24: int) -> str:
+    """Format an hour (0-23) as the 12-hour 'h:00 AM/PM' string the station UI uses
+    (see frontend TIME_OPTIONS in utils/stationHours.ts)."""
+    hour24 %= 24
+    period = "AM" if hour24 < 12 else "PM"
+    h = hour24 % 12 or 12
+    return f"{h}:00 {period}"
+
+
+def _parse_one_time(seg: str) -> str | None:
+    seg = seg.translate(_AR_DIGITS)
+    if "منتصف الليل" in seg:  # midnight / after-midnight → 12 AM
+        return "12:00 AM"
+    m = re.search(r"(\d{1,2})(?::(\d{2}))?", seg)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    has_colon = m.group(2) is not None
+    # 24-hour numeric (e.g. "23:00") — derive AM/PM from the value itself.
+    if hour >= 13 or (has_colon and hour == 0):
+        return _to_12h(hour)
+    if "مساء" in seg or "ظهر" in seg:  # PM
+        return _to_12h(hour % 12 + 12)
+    if "صباح" in seg or "فجر" in seg:  # AM (12 صباحاً → midnight)
+        return _to_12h(hour % 12)
+    return _to_12h(hour % 24)
+
+
+def parse_station_hours(text: str | None) -> tuple[bool, str | None, str | None]:
+    """Parse an Arabic working-hours phrase into (is_24_hours, opens_at, closes_at).
+
+    Handles "24 ساعة" and ranges like "من 8 صباحاً إلي 11 مساءً" /
+    "من 8:00 صباحاً إلي 23:00 مساءً" / "... إلي 12 بعد منتصف الليل". The opens/closes
+    strings match the frontend TIME_OPTIONS values ("8:00 AM", "11:00 PM")."""
+    if not text:
+        return (False, None, None)
+    if "24" in text and "ساع" in text:
+        return (True, None, None)
+    parts = [p.strip() for p in re.split(r"إل[يى]|ال[يى]|حتى|–|—|-", text) if p.strip()]
+    if parts and parts[0].startswith("من"):
+        parts[0] = parts[0][2:].strip()
+    if len(parts) >= 2:
+        opens = _parse_one_time(parts[0])
+        closes = _parse_one_time(parts[1])
+        if opens and closes:
+            return (False, opens, closes)
+    return (False, None, None)
+
+
 def parse_faq_pairs(content: str) -> list[tuple[str, str]]:
     blocks = re.split(r"\n\s*\n", content.strip())
     pairs: list[tuple[str, str]] = []

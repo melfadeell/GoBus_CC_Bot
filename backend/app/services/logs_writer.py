@@ -94,6 +94,8 @@ def log_chat_turn(
     has_image: bool,
     success: bool = True,
     error_message: str | None = None,
+    customer_id: int | None = None,
+    customer_email: str | None = None,
 ) -> None:
     try:
         db = _session()
@@ -104,6 +106,8 @@ def log_chat_turn(
                     session_id=session_id,
                     channel=channel,
                     client_ip=client_ip,
+                    customer_id=customer_id,
+                    customer_email=customer_email,
                     user_message=_truncate(user_message),
                     ai_response=_truncate(ai_response),
                     model=model,

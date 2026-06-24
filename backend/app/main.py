@@ -17,16 +17,19 @@ from app.core.logging import setup_logging
 from app.core.rate_limit import get_client_ip, limiter
 from app.core.scheduler import shutdown_scheduler, start_scheduler
 from app.routers import (
+    admin_tickets,
     auth,
     bot_settings,
     chat,
     conversations,
+    customer_auth,
     dashboard,
     destinations,
     kb,
     metrics,
     services,
     stations,
+    tickets,
     trips,
 )
 from app.services.logs_writer import log_error, log_request_end
@@ -105,7 +108,7 @@ app.state.limiter = limiter
 async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded) -> JSONResponse:
     return JSONResponse(
         status_code=429,
-        content={"detail": "Rate limit exceeded: maximum 15 chat messages per minute per IP."},
+        content={"detail": f"Rate limit exceeded ({settings.rate_limit_chat} per IP). Please slow down."},
     )
 
 app.add_middleware(
@@ -137,6 +140,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 app.include_router(auth.router)
+app.include_router(customer_auth.router)
+app.include_router(tickets.router)
+app.include_router(admin_tickets.router)
 app.include_router(kb.router)
 app.include_router(stations.router)
 app.include_router(destinations.router)

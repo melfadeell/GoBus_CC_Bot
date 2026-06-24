@@ -125,3 +125,10 @@ def restore_prompt_version(
 def public_greeting(db: Session = Depends(get_db)):
     bot = get_bot_settings(db)
     return {"greeting": bot.greeting_ar}
+
+
+@router.get("/public/info")
+def public_info(db: Session = Depends(get_db)):
+    """Public bot info for the chat UI (greeting + the single-source hotline)."""
+    bot = get_bot_settings(db)
+    return {"greeting": bot.greeting_ar, "hotline": bot.hotline}

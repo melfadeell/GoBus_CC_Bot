@@ -1,14 +1,17 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { runtimeHotline } from '@/api/client'
 
 interface ChatMessageContentProps {
   content: string
   isUser?: boolean
 }
 
-/** Always render the GoBus hotline number in bold, collapsing any existing bold. */
+/** Always render the GoBus hotline number in bold, collapsing any existing bold.
+ *  Uses the runtime (admin-configured) hotline value. */
 function emphasizeHotline(md: string): string {
-  return md.replace(/\*{0,2}\b19567\b\*{0,2}/g, '**19567**')
+  const h = (runtimeHotline || '19567').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return md.replace(new RegExp(`\\*{0,2}\\b${h}\\b\\*{0,2}`, 'g'), `**${runtimeHotline}**`)
 }
 
 export default function ChatMessageContent({ content, isUser }: ChatMessageContentProps) {

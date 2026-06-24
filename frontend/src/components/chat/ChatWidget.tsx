@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ImagePlus, MessageSquareText, Send, Sparkles, Square, X } from 'lucide-react'
-import { CHAT_CHANNELS } from '@/api/client'
+import { Link } from 'react-router-dom'
+import { ChevronDown, ChevronRight, ImagePlus, LogIn, LogOut, MessageSquareText, PanelLeftClose, PanelLeftOpen, Send, Sparkles, Square, UserCircle2, X } from 'lucide-react'
+import {
+  CHAT_CHANNELS,
+  clearCustomerToken,
+  customerApi,
+  fetchPublicInfo,
+  getCustomerToken,
+  type CustomerProfile,
+  type TicketDraft,
+  type TicketSummary,
+} from '@/api/client'
 import LanguageToggle from '@/components/layout/LanguageToggle'
 import {
   ocrImage,
@@ -12,6 +22,7 @@ import {
 } from '@/hooks/useChatStream'
 import { useLanguage } from '@/i18n/LanguageProvider'
 import MessageBubble from './MessageBubble'
+import CustomerAuthModal from './CustomerAuthModal'
 
 const SESSION_KEY = 'gobus_chat_session'
 const CHANNEL_KEY = 'gobus_chat_channel'
@@ -32,6 +43,9 @@ interface Message {
   stations?: StationCardData[]
   destinations?: string[]
   trips?: TripRow[]
+  ticketDraft?: TicketDraft
+  ticketLoggedIn?: boolean
+  ticketsCrm?: TicketSummary[]
 }
 
 interface PendingImage {
@@ -47,26 +61,63 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
   const { t, locale } = useLanguage()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [hotline] = useState('19567')
+  const [hotline, setHotline] = useState('19567')
   const [error, setError] = useState<string | null>(null)
   const [initialized, setInitialized] = useState(false)
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null)
   const [readingImage, setReadingImage] = useState(false)
   const [channel, setChannel] = useState(resolveChannel)
+  const [profile, setProfile] = useState<CustomerProfile | null>(null)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set())
   const sessionRef = useRef<string | null>(sessionStorage.getItem(SESSION_KEY))
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hasUserSentRef = useRef(false)
   const { sendMessage, isStreaming, cancel } = useChatStream()
 
-  const greeting = t.chat.greeting
+  // Name-aware greeting on the website: personalized when a customer is logged in.
+  const greeting = profile
+    ? t.chat.greetingNamed.replace('{name}', profile.full_name)
+    : t.chat.greeting
 
+  // The proactive (page-load) greeting is shown only on the WEBSITE channel.
+  // Social channels are message-triggered: the bot greets (and answers) on the
+  // customer's first message, handled server-side — so no greeting bubble here.
   useEffect(() => {
     if (!hasUserSentRef.current) {
-      setMessages([{ id: 'greeting', role: 'assistant', content: greeting }])
+      setMessages(channel === 'website' ? [{ id: 'greeting', role: 'assistant', content: greeting }] : [])
       setInitialized(true)
     }
-  }, [greeting, locale])
+  }, [greeting, locale, channel])
+
+  // Restore the logged-in customer (if any) on mount.
+  useEffect(() => {
+    if (!getCustomerToken()) return
+    customerApi
+      .me()
+      .then(setProfile)
+      .catch(() => clearCustomerToken())
+  }, [])
+
+  // Load the single-source hotline (BotSettings.hotline) for the header + bolding.
+  useEffect(() => {
+    fetchPublicInfo()
+      .then((info) => setHotline(info.hotline))
+      .catch(() => {})
+  }, [])
+
+  function onAuthed(p: CustomerProfile) {
+    setProfile(p)
+    setAuthOpen(false)
+  }
+
+  function logoutCustomer() {
+    clearCustomerToken()
+    setProfile(null)
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -160,6 +211,11 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
           )
         },
         onMeta: (meta) => {
+          // The bot asked an unauthenticated user to log in to see their tickets.
+          if (meta.action === 'login_required' && !getCustomerToken()) {
+            setAuthMode('login')
+            setAuthOpen(true)
+          }
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -170,6 +226,11 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
                     stations: meta.stations ?? m.stations,
                     destinations: meta.destinations ?? m.destinations,
                     trips: meta.trips ?? m.trips,
+                    ticketDraft:
+                      meta.action === 'open_ticket_form' ? meta.draft ?? m.ticketDraft : m.ticketDraft,
+                    ticketLoggedIn:
+                      meta.action === 'open_ticket_form' ? meta.logged_in ?? m.ticketLoggedIn : m.ticketLoggedIn,
+                    ticketsCrm: meta.tickets_crm ?? m.ticketsCrm,
                   }
                 : m
             )
@@ -204,7 +265,7 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
       prev.forEach((m) => {
         if (m.imageUrl) URL.revokeObjectURL(m.imageUrl)
       })
-      return [{ id: 'greeting', role: 'assistant', content: greeting }]
+      return channel === 'website' ? [{ id: 'greeting', role: 'assistant', content: greeting }] : []
     })
     clearPendingImage()
   }
@@ -212,7 +273,14 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
   // In full-page mode the demo prompts live in the left sidebar, so don't
   // duplicate them inline on the first screen.
   const showPrompts = initialized && messages.length <= 1 && !isStreaming && !fullPage
-  const demoPrompts = locale === 'ar' ? t.chat.promptsAr : t.chat.promptsEn
+  const demoCategories = t.chat.demoCategories
+  const demoPrompts = demoCategories.flatMap((c) => c.questions)
+  const toggleCat = (title: string) =>
+    setExpandedCats((prev) => {
+      const next = new Set(prev)
+      next.has(title) ? next.delete(title) : next.add(title)
+      return next
+    })
   const canSend = (input.trim() || pendingImage) && !isStreaming && !readingImage && initialized
 
   const channelLabel = (ch: string) => {
@@ -257,6 +325,34 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
             ))}
           </select>
           <LanguageToggle className="inline-flex" onDark />
+          {profile ? (
+            <div className="flex items-center gap-1.5">
+              <Link to="/chat/account" className="chat-user-name hover:underline" title={t.chat.account.title}>
+                <UserCircle2 size={15} />
+                <span className="hidden sm:inline">{profile.full_name}</span>
+              </Link>
+              <button
+                type="button"
+                className="btn-ghost text-white border-white/25 text-xs hover:bg-white/10 px-2"
+                onClick={logoutCustomer}
+                title={t.chat.auth.logout}
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="btn-ghost text-white border-white/25 text-xs hover:bg-white/10 flex items-center gap-1"
+              onClick={() => {
+                setAuthMode('login')
+                setAuthOpen(true)
+              }}
+            >
+              <LogIn size={14} />
+              <span className="hidden sm:inline">{t.chat.auth.login}</span>
+            </button>
+          )}
           <button
             type="button"
             className="btn-ghost text-white border-white/25 text-xs hover:bg-white/10"
@@ -283,6 +379,11 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
                 stations={msg.stations}
                 destinations={msg.destinations}
                 trips={msg.trips}
+                ticketDraft={msg.ticketDraft}
+                ticketLoggedIn={msg.ticketLoggedIn}
+                ticketsCrm={msg.ticketsCrm}
+                ticketChannel={channel}
+                ticketSessionId={sessionRef.current}
                 isTyping={isStreaming && msg.role === 'assistant' && !msg.content}
               />
             ))}
@@ -376,36 +477,85 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
     </div>
   )
 
-  if (!fullPage) return panel
+  const authModal = authOpen ? (
+    <CustomerAuthModal initialMode={authMode} onClose={() => setAuthOpen(false)} onAuthed={onAuthed} />
+  ) : null
+
+  if (!fullPage)
+    return (
+      <>
+        {panel}
+        {authModal}
+      </>
+    )
 
   return (
     <div className="flex h-dvh w-full">
-      <aside className="demo-sidebar hidden md:flex flex-col w-72 shrink-0 overflow-y-auto">
-        <div className="demo-sidebar-header">
-          <div className="flex items-center gap-2">
-            <span className="demo-sidebar-icon">
-              <Sparkles size={15} />
-            </span>
-            <span className="demo-sidebar-title">{t.chat.demoScenarios}</span>
-          </div>
-          <span className="demo-pill">Demo</span>
-        </div>
-        <div className="flex flex-col gap-2 p-3">
-          {demoPrompts.map((prompt, i) => (
+      {authModal}
+      {sidebarOpen ? (
+        <aside className="demo-sidebar hidden md:flex flex-col w-72 shrink-0 overflow-y-auto">
+          <div className="demo-sidebar-header">
+            <div className="flex items-center gap-2">
+              <span className="demo-sidebar-icon">
+                <Sparkles size={15} />
+              </span>
+              <span className="demo-sidebar-title">{t.chat.demoScenarios}</span>
+            </div>
             <button
-              key={prompt}
               type="button"
-              className="demo-item"
-              onClick={() => submit(prompt)}
-              disabled={isStreaming || readingImage || !initialized}
+              className="demo-collapse-btn"
+              onClick={() => setSidebarOpen(false)}
+              title={t.chat.hidePrompts}
+              aria-label={t.chat.hidePrompts}
             >
-              <span className="demo-item-num">{i + 1}</span>
-              <MessageSquareText size={14} className="demo-item-icon shrink-0" />
-              <span className="demo-item-text">{prompt}</span>
+              <PanelLeftClose size={16} />
             </button>
-          ))}
-        </div>
-      </aside>
+          </div>
+          <div className="flex flex-col gap-1 p-2">
+            {demoCategories.map((cat) => {
+              const expanded = expandedCats.has(cat.title)
+              return (
+                <div key={cat.title} className="demo-cat">
+                  <button type="button" className="demo-cat-header" onClick={() => toggleCat(cat.title)}>
+                    {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} className="rtl:rotate-180" />}
+                    <span className="demo-cat-title">{cat.title}</span>
+                    <span className="demo-cat-count">{cat.questions.length}</span>
+                  </button>
+                  {expanded && (
+                    <div className="demo-cat-items">
+                      {cat.questions.map((q) => (
+                        <button
+                          key={q}
+                          type="button"
+                          className="demo-item"
+                          onClick={() => submit(q)}
+                          disabled={isStreaming || readingImage || !initialized}
+                        >
+                          <MessageSquareText size={13} className="demo-item-icon shrink-0" />
+                          <span className="demo-item-text">{q}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </aside>
+      ) : (
+        <aside className="demo-rail hidden md:flex flex-col items-center shrink-0">
+          <button
+            type="button"
+            className="demo-rail-btn"
+            onClick={() => setSidebarOpen(true)}
+            title={t.chat.showPrompts}
+            aria-label={t.chat.showPrompts}
+          >
+            <PanelLeftOpen size={18} />
+          </button>
+          <span className="demo-rail-label">{t.chat.demoScenarios}</span>
+        </aside>
+      )}
       {panel}
     </div>
   )

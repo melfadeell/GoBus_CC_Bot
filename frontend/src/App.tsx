@@ -11,10 +11,13 @@ import StationsListPage from '@/pages/StationsList'
 import StationEditPage from '@/pages/StationEdit'
 import TripsListPage from '@/pages/TripsList'
 import TripEditPage from '@/pages/TripEdit'
+import TicketsListPage from '@/pages/TicketsList'
+import TicketDetailPage from '@/pages/TicketDetail'
 import BotSettingsPage from '@/pages/BotSettingsPage'
 import ConversationsPage from '@/pages/ConversationsPage'
 import MetricsPage from '@/pages/MetricsPage'
 import PublicChatPage from '@/pages/PublicChat'
+import CustomerAccountPage from '@/pages/CustomerAccount'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   if (!getToken()) return <Navigate to="/login" replace />
@@ -43,6 +46,7 @@ export default function App() {
     <Routes>
       <Route element={<ChatLanguageShell />}>
         <Route path="/chat" element={<PublicChatPage />} />
+        <Route path="/chat/account" element={<CustomerAccountPage />} />
       </Route>
 
       <Route element={<AdminLanguageShell />}>
@@ -62,6 +66,8 @@ export default function App() {
           <Route path="stations/:id" element={<StationEditPage />} />
           <Route path="trips" element={<TripsListPage />} />
           <Route path="trips/:id" element={<TripEditPage />} />
+          <Route path="tickets" element={<TicketsListPage />} />
+          <Route path="tickets/:id" element={<TicketDetailPage />} />
           <Route path="conversations" element={<ConversationsPage />} />
           <Route path="metrics" element={<MetricsPage />} />
           <Route path="bot-settings" element={<BotSettingsPage />} />

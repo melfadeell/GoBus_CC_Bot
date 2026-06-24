@@ -3,13 +3,18 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
+from app.auth import get_current_customer_optional
+from app.config import get_settings
 from app.core.constants import CHAT_ERROR_MESSAGE
 from app.core.rate_limit import get_client_ip, limiter
+
+settings = get_settings()
 from app.database import SessionLocal
+from app.models.models import Customer
 from app.schemas.schemas import ChatRequest, OcrResponse
 from app.services.chat_service import ChatProcessingError, stream_chat_response
 from app.services.chat_uploads import resolve_attachment_path, save_chat_image
@@ -65,14 +70,23 @@ async def chat_ocr(file: UploadFile = File(...)):
 
 
 @router.post("/stream")
-@limiter.limit("15/minute")
-async def chat_stream(request: Request, payload: ChatRequest):
+@limiter.limit(settings.rate_limit_chat)
+async def chat_stream(
+    request: Request,
+    payload: ChatRequest,
+    customer: Customer | None = Depends(get_current_customer_optional),
+):
     session_id = payload.session_id or str(uuid.uuid4())
     user_message = payload.message.strip()
     ocr_text = payload.ocr_text
     image_url = payload.image_url
     client_ip = get_client_ip(request)
     request_id = getattr(request.state, "request_id", None)
+    # Resolve customer identity to primitives now — the request-scoped DB session
+    # closes before the generator below runs, so don't touch the ORM object later.
+    customer_id = customer.id if customer else None
+    customer_name = customer.full_name if customer else None
+    customer_email = customer.email if customer else None
 
     async def event_generator():
         yield {"event": "session", "data": json.dumps({"session_id": session_id})}
@@ -95,6 +109,9 @@ async def chat_stream(request: Request, payload: ChatRequest):
                 client_ip=client_ip,
                 request_id=request_id,
                 cancelled=is_cancelled,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                customer_email=customer_email,
             ):
                 if await request.is_disconnected():
                     cancelled["flag"] = True

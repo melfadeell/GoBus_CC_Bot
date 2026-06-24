@@ -7,6 +7,7 @@ import CostTrendChart from '@/components/dashboard/CostTrendChart'
 import MessagesTrendChart from '@/components/dashboard/MessagesTrendChart'
 import TokenSplitChart from '@/components/dashboard/TokenSplitChart'
 import TokenUsageChart from '@/components/dashboard/TokenUsageChart'
+import DateRangeFilter from '@/components/admin/DateRangeFilter'
 import { ErrorState, LoadingState, PageHeader } from '@/components/admin/Shared'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
@@ -75,38 +76,7 @@ export default function DashboardPage() {
       <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <PageHeader title={d.title} subtitle={d.subtitle} />
         <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{d.dateFrom}</label>
-            <input
-              type="date"
-              className="input-field ltr"
-              value={dateFrom}
-              max={dateTo || undefined}
-              onChange={(e) => setDateFrom(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{d.dateTo}</label>
-            <input
-              type="date"
-              className="input-field ltr"
-              value={dateTo}
-              min={dateFrom || undefined}
-              onChange={(e) => setDateTo(e.target.value)}
-            />
-          </div>
-          {(dateFrom || dateTo) && (
-            <button
-              type="button"
-              className="btn-ghost text-sm"
-              onClick={() => {
-                setDateFrom('')
-                setDateTo('')
-              }}
-            >
-              {d.clearDates}
-            </button>
-          )}
+          <DateRangeFilter from={dateFrom} to={dateTo} onChange={(f, t2) => { setDateFrom(f); setDateTo(t2) }} />
           <div>
             <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{d.filterChannel}</label>
             <select

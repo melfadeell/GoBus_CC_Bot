@@ -42,6 +42,62 @@ class Settings(BaseSettings):
     trip_refresh_days: int = 14
     app_version: str = "1.0.0"
 
+    # --- CRM / ticketing (email + OTP) ---
+    # When false, emails are NOT sent — they're logged (mock mode) so the feature
+    # works end-to-end before real SMTP creds are supplied.
+    smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "GoBus Support <no-reply@gobus.local>"
+    smtp_use_tls: bool = True
+    # Email-OTP for guest ticket creation/lookup.
+    otp_ttl_minutes: int = 10
+    otp_max_attempts: int = 5
+    # Model used by the in-app ticketing agent to classify + draft tickets.
+    ticketing_model: str = "gpt-4o-mini"
+
+    # --- Rate limits (slowapi strings; override via .env, e.g. RATE_LIMIT_CHAT="30/minute") ---
+    rate_limit_chat: str = "15/minute"
+    rate_limit_auth: str = "10/minute"
+    rate_limit_customer_auth: str = "10/minute"
+    rate_limit_ticket: str = "10/minute"
+    rate_limit_otp_request: str = "5/minute"
+
+    # --- Login lockout (shared by admin + customer auth) ---
+    login_lockout_threshold: int = 5
+    login_lockout_window_minutes: int = 15
+
+    # --- Cost estimation: USD per 1M tokens (input, output) per model. Override the
+    # whole map via the MODEL_PRICING env var as JSON, e.g.
+    # MODEL_PRICING='{"gpt-4o-mini":[0.15,0.6]}'. default_model_pricing is the fallback. ---
+    model_pricing: dict[str, tuple[float, float]] = {
+        "gpt-5-mini": (0.25, 2.00),
+        "gpt-5": (1.25, 10.00),
+        "gpt-4o": (2.50, 10.00),
+        "gpt-4o-mini": (0.15, 0.60),
+        "gpt-4.1-mini": (0.40, 1.60),
+    }
+    default_model_pricing: tuple[float, float] = (0.25, 2.00)
+
+    # --- Representative station per route city (trip departure/arrival defaults).
+    # Override via the CITY_STATION_NAMES env var as JSON. ---
+    city_station_names: dict[str, str] = {
+        "القاهرة": "عبد المنعم رياض",
+        "الإسكندرية": "سيدي جابر _ سموحة",
+        "الأقصر": "الأقصر",
+        "الساحل الشمالى": "مراسى (الساحل الشمالى)",
+        "العين السخنة": "بورتو السخنة",
+        "الغردقة": "الغردقة",
+        "بورسعيد": "بورسعيد وسط البلد",
+        "دهب": "دهب",
+        "شرم الشيخ": "جوباص شرم",
+        "مرسى علم": "مرسى علم",
+        "مكادى": "مكادى",
+        "نويبع": "نويبع",
+    }
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

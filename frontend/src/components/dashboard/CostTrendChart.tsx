@@ -2,6 +2,7 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -42,7 +43,18 @@ export default function CostTrendChart({ data, height = 224 }: CostTrendChartPro
           fill="url(#costFill)"
           strokeWidth={2}
           animationDuration={700}
-        />
+        >
+          <LabelList
+            dataKey="cost_usd"
+            position="top"
+            fontSize={9}
+            fill="var(--color-text-muted)"
+            formatter={(value) => {
+              const n = Number(value ?? 0)
+              return n > 0 ? `$${n.toFixed(2)}` : ''
+            }}
+          />
+        </Area>
       </AreaChart>
     </ResponsiveContainer>
   )

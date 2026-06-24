@@ -72,7 +72,6 @@ export default function StationsListPage() {
         {viewStation && (
           <div className="space-y-3 text-sm">
             <div><span className="font-medium">{t.stations.description}:</span><p className="mt-1 whitespace-pre-wrap text-[var(--color-text-muted)]">{viewStation.description}</p></div>
-            <div><span className="font-medium">{t.stations.city}:</span> {viewStation.city || '—'}</div>
             <div><span className="font-medium">{t.stations.workingHours}:</span> {viewStation.working_hours || (viewStation.is_24_hours ? t.stations.hours24 : '—')}</div>
             {viewStation.map_url && (
               <div><span className="font-medium">{t.stations.mapUrl}:</span> <a href={viewStation.map_url} target="_blank" rel="noreferrer" className="text-blue-600 ltr inline-block">{viewStation.map_url}</a></div>

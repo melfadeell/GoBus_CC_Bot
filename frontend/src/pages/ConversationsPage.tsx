@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ChatMessage, ChatSession } from '@/api/client'
 import MessageBubble from '@/components/chat/MessageBubble'
+import DateRangeFilter from '@/components/admin/DateRangeFilter'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '@/components/admin/Shared'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
@@ -70,29 +71,8 @@ export default function ConversationsPage() {
       <PageHeader title={t.conversations.title} subtitle={t.conversations.subtitle} />
 
       <div className="card p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-          <div>
-            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">
-              {t.conversations.dateFrom}
-            </label>
-            <input
-              type="date"
-              className="input-field"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">
-              {t.conversations.dateTo}
-            </label>
-            <input
-              type="date"
-              className="input-field"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-            />
-          </div>
+        <div className="filter-toolbar">
+          <DateRangeFilter from={dateFrom} to={dateTo} onChange={(f, t2) => { setDateFrom(f); setDateTo(t2) }} />
           <div>
             <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">
               {t.conversations.minMessages}
@@ -100,19 +80,17 @@ export default function ConversationsPage() {
             <input
               type="number"
               min={0}
-              className="input-field"
+              className="input-field w-32"
               placeholder="0"
               value={minMessages}
               onChange={(e) => setMinMessages(e.target.value)}
             />
           </div>
-          <div className="flex gap-2">
-            {hasFilters && (
-              <button type="button" className="btn-ghost flex-1" onClick={clearFilters}>
-                {t.conversations.clearFilters}
-              </button>
-            )}
-          </div>
+          {hasFilters && (
+            <button type="button" className="btn-ghost" onClick={clearFilters}>
+              {t.conversations.clearFilters}
+            </button>
+          )}
         </div>
         {total > 0 && (
           <p className="text-xs text-[var(--color-text-muted)] mt-3">

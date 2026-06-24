@@ -14,6 +14,9 @@ class ChatLog(LogsBase):
     session_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     channel: Mapped[str | None] = mapped_column(String(50), nullable=True)
     client_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    # Per-customer traceability (null for anonymous chats).
+    customer_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)

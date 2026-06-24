@@ -12,10 +12,12 @@ export default function TripsTable({ trips }: TripsTableProps) {
   const ar = locale === 'ar'
   // Show the route column only when more than one route is present.
   const multiRoute = new Set(trips.map((t) => `${t.origin}→${t.destination}`)).size > 1
+  // Show station columns only when at least one trip has them assigned.
+  const hasStations = trips.some((t) => t.departure_station || t.arrival_station)
 
   const h = ar
-    ? { route: 'المسار', date: 'التاريخ', dep: 'المغادرة', arr: 'الوصول', cls: 'الفئة', seats: 'المقاعد', price: 'السعر' }
-    : { route: 'Route', date: 'Date', dep: 'Departure', arr: 'Arrival', cls: 'Class', seats: 'Seats', price: 'Price' }
+    ? { route: 'المسار', from: 'محطة القيام', to: 'محطة الوصول', date: 'التاريخ', dep: 'المغادرة', arr: 'الوصول', cls: 'الفئة', seats: 'المقاعد', price: 'السعر' }
+    : { route: 'Route', from: 'From station', to: 'To station', date: 'Date', dep: 'Departure', arr: 'Arrival', cls: 'Class', seats: 'Seats', price: 'Price' }
   const currency = ar ? 'جنيه' : 'EGP'
 
   return (
@@ -24,6 +26,8 @@ export default function TripsTable({ trips }: TripsTableProps) {
         <thead className="chat-md-thead">
           <tr>
             {multiRoute ? <th className="chat-md-th">{h.route}</th> : null}
+            {hasStations ? <th className="chat-md-th">{h.from}</th> : null}
+            {hasStations ? <th className="chat-md-th">{h.to}</th> : null}
             <th className="chat-md-th">{h.date}</th>
             <th className="chat-md-th">{h.dep}</th>
             <th className="chat-md-th">{h.arr}</th>
@@ -38,6 +42,8 @@ export default function TripsTable({ trips }: TripsTableProps) {
               {multiRoute ? (
                 <td className="chat-md-td">{`${t.origin} → ${t.destination}`}</td>
               ) : null}
+              {hasStations ? <td className="chat-md-td">{t.departure_station || '—'}</td> : null}
+              {hasStations ? <td className="chat-md-td">{t.arrival_station || '—'}</td> : null}
               <td className="chat-md-td">{t.date}</td>
               <td className="chat-md-td">{t.departure}</td>
               <td className="chat-md-td">{t.arrival}</td>

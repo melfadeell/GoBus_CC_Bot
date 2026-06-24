@@ -24,6 +24,168 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+# Customer auth
+_EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+_PHONE_RE = r"^[0-9+()\-\s]{6,40}$"
+
+
+class CustomerRegisterRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=255)
+    phone: str = Field(pattern=_PHONE_RE)
+    email: str = Field(pattern=_EMAIL_RE, max_length=255)
+    password: str = Field(min_length=6, max_length=128)
+    confirm_password: str = Field(min_length=6, max_length=128)
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> "CustomerRegisterRequest":
+        if self.password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
+
+
+class CustomerLoginRequest(BaseModel):
+    email: str = Field(pattern=_EMAIL_RE, max_length=255)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class CustomerMeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+    phone: str
+    email: str
+
+
+class CustomerUpdateRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=255)
+    phone: str = Field(pattern=_PHONE_RE)
+    email: str = Field(pattern=_EMAIL_RE, max_length=255)
+
+
+class CustomerPasswordRequest(BaseModel):
+    old_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+    confirm_password: str = Field(min_length=6, max_length=128)
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> "CustomerPasswordRequest":
+        if self.new_password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
+
+
+# Tickets — OTP (guest email verification)
+class OtpRequestRequest(BaseModel):
+    email: str = Field(pattern=_EMAIL_RE, max_length=255)
+    purpose: str = Field(default="ticket_create", max_length=40)
+
+
+class OtpVerifyRequest(BaseModel):
+    email: str = Field(pattern=_EMAIL_RE, max_length=255)
+    code: str = Field(min_length=4, max_length=10)
+    purpose: str = Field(default="ticket_create", max_length=40)
+
+
+class OtpVerifyResponse(BaseModel):
+    verified_token: str
+
+
+# Tickets — create / read
+class TicketCreateRequest(BaseModel):
+    subject: str = Field(min_length=2, max_length=255)
+    description: str = Field(min_length=2, max_length=8000)
+    category: str = Field(default="other", max_length=40)
+    priority: str | None = Field(default=None, max_length=20)
+    priority_auto: str | None = Field(default=None, max_length=20)
+    channel: str | None = Field(default=None, max_length=50)
+    session_id: str | None = Field(default=None, max_length=100)
+    # Guest path (when not authenticated): contact + the OTP-verified token.
+    guest_name: str | None = Field(default=None, max_length=255)
+    guest_email: str | None = Field(default=None, pattern=_EMAIL_RE, max_length=255)
+    guest_phone: str | None = Field(default=None, pattern=_PHONE_RE)
+    verified_token: str | None = Field(default=None, max_length=2000)
+
+
+class TicketReplyRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=8000)
+
+
+class TicketMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    author_type: str
+    author_id: int | None = None
+    body: str
+    attachment_url: str | None = None
+    created_at: datetime
+
+
+class TicketSummary(BaseModel):
+    """Compact shape for lists / chat follow-up cards."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ref_number: str
+    subject: str
+    category: str
+    status: str
+    priority: str
+    created_at: datetime
+
+
+class TicketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    ref_number: str
+    customer_id: int | None = None
+    guest_name: str | None = None
+    guest_email: str | None = None
+    guest_phone: str | None = None
+    channel: str
+    category: str
+    subject: str
+    description: str
+    status: str
+    priority: str
+    priority_auto: str | None = None
+    assigned_admin_id: int | None = None
+    session_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+    messages: list[TicketMessageOut] = []
+
+
+class TicketUpdateRequest(BaseModel):
+    status: str | None = None
+    priority: str | None = None
+    assigned_admin_id: int | None = None
+
+
+class TicketAdminSummary(BaseModel):
+    """Row shape for the admin ticket list (no full thread)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    ref_number: str
+    subject: str
+    category: str
+    status: str
+    priority: str
+    priority_auto: str | None = None
+    channel: str
+    customer_id: int | None = None
+    guest_name: str | None = None
+    guest_email: str | None = None
+    assigned_admin_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 # KB
 class KbCategoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -81,7 +243,6 @@ class StationBase(BaseModel):
     closes_at: str | None = None
     map_url: str | None = None
     map_text: str | None = None
-    city: str | None = None
     is_active: bool = True
 
 
@@ -98,7 +259,6 @@ class StationUpdate(BaseModel):
     closes_at: str | None = None
     map_url: str | None = None
     map_text: str | None = None
-    city: str | None = None
     is_active: bool | None = None
 
 
@@ -186,6 +346,8 @@ class TripBase(BaseModel):
     price_egp: float
     is_bookable: bool = True
     status: str = "open"
+    departure_station_id: int | None = None
+    arrival_station_id: int | None = None
 
 
 class TripCreate(TripBase):
@@ -203,6 +365,8 @@ class TripUpdate(BaseModel):
     price_egp: float | None = None
     is_bookable: bool | None = None
     status: str | None = None
+    departure_station_id: int | None = None
+    arrival_station_id: int | None = None
 
 
 class TripOut(TripBase):
@@ -210,6 +374,8 @@ class TripOut(TripBase):
 
     id: int
     route: RouteOut | None = None
+    departure_station_name: str | None = None
+    arrival_station_name: str | None = None
 
 
 # Bot settings
@@ -386,6 +552,8 @@ class ChatLogOut(BaseModel):
     session_id: str
     channel: str | None
     client_ip: str | None
+    customer_id: int | None = None
+    customer_email: str | None = None
     user_message: str | None
     ai_response: str | None
     model: str | None
@@ -436,3 +604,15 @@ class ErrorLogOut(BaseModel):
     message: str | None
     stack_trace: str | None
     created_at: datetime
+
+
+class MetricsUserStat(BaseModel):
+    """Per-customer activity aggregated for the metrics 'Users' tab."""
+
+    customer_id: int
+    customer_email: str | None = None
+    full_name: str | None = None
+    chat_turns: int = 0
+    total_tokens: int = 0
+    tickets: int = 0
+    last_seen: datetime | None = None
