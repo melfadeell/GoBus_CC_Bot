@@ -84,8 +84,8 @@ export default function ChatWidget({ fullPage = false }: ChatWidgetProps) {
     : t.chat.greeting
 
   // The proactive (page-load) greeting is shown only on the WEBSITE channel.
-  // Social channels are message-triggered: the bot greets (and answers) on the
-  // customer's first message, handled server-side — so no greeting bubble here.
+  // Social channels (WhatsApp, Facebook, etc.) have no greeting — replies start
+  // directly with the assistant's answer.
   useEffect(() => {
     if (!hasUserSentRef.current) {
       setMessages(channel === 'website' ? [{ id: 'greeting', role: 'assistant', content: greeting }] : [])
