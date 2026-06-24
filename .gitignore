@@ -5,7 +5,6 @@ frontend/.env
 !.env.example
 
 # Reference / local only
-Canvas_Repo/
 .cursor/
 
 # Python
