@@ -14,6 +14,7 @@ from app.services.reference_cache import (
     active_services,
     active_stations,
 )
+from app.services.ticket_intent import detect_ticket_intent
 from app.utils.text_utils import normalize_arabic
 
 TRIP_KEYWORDS = {
@@ -718,6 +719,8 @@ _STATION_SEARCH_STOPWORDS = {
         "standard", "elite", "business", "gomini", "golemo", "difference", "between",
         "class", "classes", "service", "services", "price", "prices", "سعر", "اسعار", "فئات", "فئة",
         "اتوبيس", "الاتوبيس", "الأتوبيس", "اوتوبيس", "الاوتوبيس", "اتوبيسات", "المتاحة", "متاح", "متاحة",
+        # Generic English words that substring-match station addresses (e.g. "Best Way").
+        "way", "make", "complain", "complaint", "have", "help", "assist", "support",
     )
 }
 
@@ -913,6 +916,7 @@ def retrieve_context(
     debug: dict | None = None,
     history_text: str | None = None,
     extra_query: str | None = None,
+    skip_structured: bool = False,
 ) -> str:
     """Build the KB context string for a user query.
 
@@ -939,6 +943,10 @@ def retrieve_context(
                 search_terms.append(term)
     intents = _detect_content_intents(q, search_terms)
 
+    # Complaint / ticket flows should not attach trip/station/destination cards.
+    if skip_structured or detect_ticket_intent(q) == "raise":
+        intents -= {"trips", "stations", "destinations"}
+
     # Elliptical trip follow-up ("the latest 5") with a route remembered from the
     # conversation → treat as a trip query so we fetch fresh data rather than
     # letting the model reconstruct trips from earlier messages.
@@ -955,6 +963,8 @@ def retrieve_context(
         "stations" not in intents
         and "trips" not in intents
         and "destinations" not in intents
+        and not skip_structured
+        and detect_ticket_intent(q) != "raise"
         and _query_matches_station(db, q, search_terms)
     ):
         intents.add("stations")

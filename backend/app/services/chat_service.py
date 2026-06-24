@@ -310,6 +310,15 @@ async def stream_chat_response(
     if raw_query and needs_rewrite(raw_query):
         corrected_query = await correct_query(raw_query, history_text)
 
+    # Ticketing intents are handled deterministically (a confirm form / ticket cards
+    # are rendered by the app); the model only writes a one-line intro.
+    ticket_mode: str | None = None
+    ticket_meta: dict | None = None
+    intent = detect_ticket_intent(raw_query)
+    user_turns = [m.get("content", "") for m in history if m.get("role") == "user"]
+    prev_user_raise = len(user_turns) >= 2 and detect_ticket_intent(user_turns[-2]) == "raise"
+    skip_structured = intent == "raise" or prev_user_raise
+
     retrieval_debug: dict = {}
     context = await asyncio.to_thread(
         retrieve_context,
@@ -319,13 +328,8 @@ async def stream_chat_response(
         debug=retrieval_debug,
         history_text=history_text,
         extra_query=corrected_query,
+        skip_structured=skip_structured,
     )
-
-    # Ticketing intents are handled deterministically (a confirm form / ticket cards
-    # are rendered by the app); the model only writes a one-line intro.
-    ticket_mode: str | None = None
-    ticket_meta: dict | None = None
-    intent = detect_ticket_intent(raw_query)
     # The customer is in a raise-ticket flow if THIS message is a complaint intent, or
     # if the IMMEDIATELY PRECEDING user turn was (i.e. the bot just asked them to
     # describe the problem and this is their answer). We deliberately look only at the
@@ -337,8 +341,6 @@ async def stream_chat_response(
         or retrieval_debug.get("stations")
         or retrieval_debug.get("destinations")
     )
-    user_turns = [m.get("content", "") for m in history if m.get("role") == "user"]
-    prev_user_raise = len(user_turns) >= 2 and detect_ticket_intent(user_turns[-2]) == "raise"
     in_raise_flow = intent == "raise" or (
         intent is None and prev_user_raise and not has_content_result
     )
@@ -383,22 +385,20 @@ async def stream_chat_response(
     if trips_sql and settings.expose_sql_debug:
         yield {"type": "meta", "sql": trips_sql}
 
-    # Stations are rendered as a deterministic card in the UI; send the structured
-    # data so the layout never depends on the model's (unreliable) formatting.
-    stations = retrieval_debug.get("stations")
-    if stations:
-        yield {"type": "meta", "stations": stations}
+    # Structured KB cards/tables are suppressed during ticket flows so a complaint
+    # question never picks up an unrelated station/destination by accident.
+    if ticket_mode is None:
+        stations = retrieval_debug.get("stations")
+        if stations:
+            yield {"type": "meta", "stations": stations}
 
-    # The destinations list is also rendered deterministically (chips) in the UI.
-    destinations = retrieval_debug.get("destinations")
-    if destinations:
-        yield {"type": "meta", "destinations": destinations}
+        destinations = retrieval_debug.get("destinations")
+        if destinations:
+            yield {"type": "meta", "destinations": destinations}
 
-    # Trips render as a deterministic table in the UI (layout + data never depend
-    # on the model); the assistant only writes a one-line intro.
-    trips = retrieval_debug.get("trips")
-    if trips:
-        yield {"type": "meta", "trips": trips}
+        trips = retrieval_debug.get("trips")
+        if trips:
+            yield {"type": "meta", "trips": trips}
 
     client = get_openai_client()
     full_response = ""
