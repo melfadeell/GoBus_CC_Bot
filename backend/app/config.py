@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Fast, cheap model used only to clean/correct the user's query before retrieval.
     query_rewrite_model: str = "gpt-4o-mini"
     query_rewrite_enabled: bool = True
+    # LLM routing: decides content/ticket intents from message + conversation context.
+    chat_understanding_enabled: bool = True
+    chat_understanding_model: str = "gpt-4o-mini"
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 720

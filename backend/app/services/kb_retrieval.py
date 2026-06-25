@@ -14,69 +14,8 @@ from app.services.reference_cache import (
     active_services,
     active_stations,
 )
-from app.services.ticket_intent import detect_ticket_intent
+from app.services.chat_understanding import ChatUnderstanding
 from app.utils.text_utils import normalize_arabic
-
-TRIP_KEYWORDS = {
-    "رحلة", "موعد", "مقعد", "trip", "seat", "schedule", "next", "available", "مواعيد", "التالي", "رحلات",
-    "price", "prices", "سعر", "أسعار", "departure", "arrival", "مغادرة", "وصول",
-}
-BOOKING_KEYWORDS = {"book", "booking", "حجز", "احجز", "أحجز", "تذكرة", "ticket", "reserve"}
-FAQ_KEYWORDS = {
-    "faq", "how do", "how can", "how to", "what is", "what are", "why", "when", "where can i",
-    "hotline", "phone", "contact", "call",
-    "كيف", "ما هو", "ما هي", "لماذا", "متى", "هل يمكن", "أسئلة", "سؤال", "الخط الساخن", "اتصل",
-}
-POLICY_KEYWORDS = {
-    "policy", "policies", "terms", "conditions", "cancel", "cancellation", "refund", "privacy",
-    "سياسة", "سياسات", "شروط", "أحكام", "إلغاء", "استرداد", "خصوصية", "استرجاع",
-}
-DESTINATION_KEYWORDS = {
-    "destination", "destinations", "guide", "visit", "about dahab", "about alex",
-    "وجهة", "وجهات", "دليل", "زيارة", "عن مدينة", "tell me about",
-}
-SERVICE_KEYWORDS = {
-    "gomini", "golemo", "جوميني", "جوليمو", "go mini", "go lemo",
-    "difference between", " vs ", "compare", "الفرق بين", "مقارنة",
-}
-GENERAL_COMPANY_KEYWORDS = {
-    "owner",
-    "ownership",
-    "who owns",
-    "who is",
-    "about gobus",
-    "about us",
-    "company",
-    "history",
-    "founded",
-    "establish",
-    "vision",
-    "mission",
-    "shareholder",
-    "corporate",
-    "general inquiry",
-    "general information",
-    "مالك",
-    "ملكية",
-    "من يملك",
-    "شركة",
-    "عن جوباص",
-    "عن الشركة",
-    "معلومات عنا",
-    "معلومات عامة",
-    "تاريخ",
-    "تأسست",
-    "رؤية",
-    "مهمة",
-    "مساهمة",
-}
-
-STATION_KEYWORDS = {
-    "station", "stations", "location", "map", "where", "address", "directions", "branch", "office",
-    "nearest", "closest", "near", "street",
-    "محطة", "محطه", "موقع", "فين", "عنوان", "خريطة", "مكان", "فرع", "لوكيشن",
-    "أقرب", "اقرب", "قريب", "قريبة", "شارع", "ميدان", "منطقة",
-}
 
 STATION_ALIASES: dict[str, list[str]] = {
     "giza": ["الجيزة", "جيزة"],
@@ -181,7 +120,7 @@ def _expand_search_terms(query: str, db: Session) -> list[str]:
 
     for token in re.split(r"[\s,;–\-/|]+", stripped):
         token = token.strip()
-        if len(token) >= 3 and token.lower() not in TRIP_KEYWORDS:
+        if len(token) >= 3:
             terms.append(token)
 
     seen: set[str] = set()
@@ -193,91 +132,9 @@ def _expand_search_terms(query: str, db: Session) -> list[str]:
     return unique
 
 
-def _mentions_trips(query: str) -> bool:
-    q = query.lower()
-    return any(k in q for k in TRIP_KEYWORDS)
-
-
-def _mentions_booking(query: str) -> bool:
-    q = query.lower()
-    return any(k in q for k in BOOKING_KEYWORDS)
-
-
-def _mentions_faq(query: str) -> bool:
-    q = query.lower()
-    return any(k in q for k in FAQ_KEYWORDS)
-
-
-def _mentions_policies(query: str) -> bool:
-    q = query.lower()
-    return any(k in q for k in POLICY_KEYWORDS)
-
-
-def _mentions_destination_topic(query: str) -> bool:
-    q = query.lower()
-    if any(k in q for k in DESTINATION_KEYWORDS):
-        return True
-    return _mentions_destination(query) and not _mentions_trips(query)
-
-
-def _mentions_services(query: str) -> bool:
-    q = query.lower()
-    if any(k in q for k in SERVICE_KEYWORDS):
-        return True
-    return ("gobus" in q or "جوباص" in q) and any(
-        word in q for word in ("service", "services", "mini", "lemo", "خدمة", "خدمات")
-    )
-
-
-def _mentions_general_company(query: str) -> bool:
-    q = query.lower()
-    return any(k in q for k in GENERAL_COMPANY_KEYWORDS)
-
-
-def _mentions_stations(query: str) -> bool:
-    q = query.lower()
-    if any(k in q for k in STATION_KEYWORDS):
-        return True
-    if "station" in q or "محطة" in q or "nearest" in q or "أقرب" in q:
-        return any(alias in q for alias in STATION_ALIASES)
-    return False
-
-
-def _mentions_destination(query: str) -> bool:
-    q = query.lower()
-    if any(alias in q for alias in DESTINATION_ALIASES):
-        return True
-    return any(ar in query for names in DESTINATION_ALIASES.values() for ar in names)
-
-
-TRAVEL_INTENT_HINTS = (
-    "schedule", "trip", "price", "seat", "next", "travel", "go to", "going to",
-    "from", "to ", "tomorrow", "today",
-    "مواعيد", "رحلة", "رحلات", "سعر", "مقعد", "اسافر", "أسافر", "اروح", "أروح",
-    "رايح", "ذاهب", "بكرة", "بكره", "غدا", "النهاردة", "من", "الى", "إلى",
-)
-
-
-def _should_include_trips(query: str, search_terms: list[str]) -> bool:
-    if _mentions_booking(query) and not _mentions_trips(query):
-        return False
-    if _mentions_trips(query):
-        return True
-    # A named destination combined with any travel-intent phrasing → show trips.
-    if _mentions_destination(query) and any(
-        hint in query.lower() for hint in TRAVEL_INTENT_HINTS
-    ):
-        return True
-    return False
-
-
 def _trip_route_terms(search_terms: list[str]) -> list[str]:
     """Prefer origin/destination names over generic tokens for route matching."""
-    route_terms: list[str] = []
-    for term in search_terms:
-        if len(term) >= 3 and term not in TRIP_KEYWORDS:
-            route_terms.append(term)
-    return route_terms[:6]
+    return [term for term in search_terms if len(term) >= 3][:6]
 
 
 # Separator used to join conversation turns into a single ``fallback_text`` so the
@@ -363,93 +220,22 @@ def _resolve_route_ids(
     return []
 
 
-# Superlative cues that mean "show the LAST/most distant trip" rather than the
-# soonest one. Stored pre-normalized so Arabic hamza/alef variants all match.
-_LATEST_KEYWORDS = {
-    normalize_arabic(k)
-    for k in ("latest", "last", "final", "furthest", "آخر", "أخر", "اخر", "أحدث", "احدث", "أبعد", "ابعد")
-}
+def _trip_ordering(understanding: ChatUnderstanding) -> tuple[list, bool]:
+    """Decide ORDER BY columns and whether to reverse rows for display."""
+    sort = understanding.trip_sort or "soonest"
+    if sort == "cheapest":
+        return [Trip.price_egp.asc(), Trip.trip_date.asc(), Trip.departure_time.asc()], False
+    if sort == "priciest":
+        return [Trip.price_egp.desc(), Trip.trip_date.asc(), Trip.departure_time.asc()], False
+    if sort == "latest":
+        return [Trip.trip_date.desc(), Trip.departure_time.desc()], True
+    return [Trip.trip_date.asc(), Trip.departure_time.asc()], False
 
 
-def _wants_latest_trip(query: str) -> bool:
-    nq = normalize_arabic(query)
-    return any(k and k in nq for k in _LATEST_KEYWORDS)
-
-
-# Price-sort cues. "asc" → cheapest first, "desc" → most expensive first.
-_CHEAPEST_KEYWORDS = {
-    normalize_arabic(k)
-    for k in ("cheapest", "cheaper", "lowest", "least expensive", "أرخص", "ارخص", "أقل سعر", "اقل سعر", "أرخص سعر")
-}
-_PRICIEST_KEYWORDS = {
-    normalize_arabic(k)
-    for k in ("most expensive", "priciest", "highest price", "dearest", "أغلى", "اغلى", "أعلى سعر", "اعلى سعر")
-}
-
-
-def _price_sort(query: str) -> str | None:
-    nq = normalize_arabic(query)
-    # Check "most expensive" before the generic — "expensive" alone is ambiguous.
-    if any(k in nq for k in _PRICIEST_KEYWORDS):
-        return "desc"
-    if any(k in nq for k in _CHEAPEST_KEYWORDS):
-        return "asc"
-    return None
-
-
-# Time like "8:30" must not be read as a trip count.
-_TIME_RE = re.compile(r"\d{1,2}:\d{2}")
-# A count right after an ordinal/imperative cue, e.g. "latest 5", "آخر 5", "show 3".
-_COUNT_NEAR_RE = re.compile(
-    r"(?:latest|last|first|top|show|give|me|earliest|soonest|cheapest|next"
-    r"|اول|أول|اخر|آخر|اعطني|عايز|اريد|أريد|أحدث|احدث)\s+(\d{1,2})\b",
-    re.IGNORECASE,
-)
-# A count immediately before the word trip(s), e.g. "5 trips", "5 رحلات".
-_COUNT_BEFORE_TRIP_RE = re.compile(r"\b(\d{1,2})\s+(?:trips?|رحلات|رحلة)\b", re.IGNORECASE)
-
-# Cues that signal an elliptical trip follow-up ("the latest 5", "the cheapest",
-# "show 3 more") — i.e. a trip question that names neither a route nor the word
-# "trip". Combined with a route remembered from the conversation, these let us
-# still fetch fresh trip data instead of letting the model reuse stale history.
-_TRIP_FOLLOWUP_CUES = {
-    normalize_arabic(x)
-    for x in (
-        "latest", "last", "earliest", "soonest", "next", "first", "cheapest",
-        "expensive", "more", "another", "other",
-        "آخر", "اخر", "أول", "اول", "التالي", "أبكر", "ابكر", "أرخص", "ارخص",
-        "أغلى", "اغلى", "المزيد", "كمان", "تاني", "تانى", "غيرها",
-    )
-}
-
-
-def _is_trip_followup(query: str) -> bool:
-    nq = normalize_arabic(query)
-    if any(c and c in nq for c in _TRIP_FOLLOWUP_CUES):
-        return True
-    # A bare number ("5", "3") used as a follow-up after a trip listing.
-    return bool(re.fullmatch(r"\s*\d{1,2}\s*", query))
-
-
-def _trip_limit(query: str, default: int = 8, cap: int = 12) -> int:
-    """Honor an explicit small count in the query (e.g. 'latest 5 trips').
-
-    Only treats a number as a count when it follows an ordinal/imperative cue or
-    immediately precedes the word "trip(s)", or the whole query is just a number.
-    Times like "8:30" and ordinals like "the 5th" are ignored.
-    """
-    masked = _TIME_RE.sub(" ", query)
-    for rx in (_COUNT_NEAR_RE, _COUNT_BEFORE_TRIP_RE):
-        m = rx.search(masked)
-        if m:
-            n = int(m.group(1))
-            if 1 <= n <= cap:
-                return n
-    stripped = query.strip()
-    if re.fullmatch(r"\d{1,2}", stripped):
-        n = int(stripped)
-        if 1 <= n <= cap:
-            return n
+def _trip_limit(understanding: ChatUnderstanding, default: int = 8, cap: int = 12) -> int:
+    n = understanding.trip_limit
+    if n is not None and 1 <= n <= cap:
+        return n
     return default
 
 
@@ -475,26 +261,6 @@ def _term_matches(nt: str, text_norm: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(nt)}(?!\w)", text_norm) is not None
 
 
-def _query_matches_station(db: Session, query_text: str, search_terms: list[str]) -> bool:
-    """True when the query names a known station — by name OR address/area.
-
-    Lets bare station names ("التجمع الخامس") or area mentions ("شارع التسعين")
-    trigger station retrieval even without an explicit "station/nearest" keyword.
-    Uses the same distinctive (stopword-filtered) terms as the station fetch so
-    generic words like "شارع" alone don't match every station.
-    """
-    terms = _station_search_terms(search_terms)
-    if not terms:
-        return False
-    norm_terms = [normalize_arabic(t) for t in terms]
-    for station in active_stations():
-        norm_name = normalize_arabic(station.name)
-        norm_addr = normalize_arabic(station.description or "")
-        if any(_term_matches(nt, norm_name) or _term_matches(nt, norm_addr) for nt in norm_terms):
-            return True
-    return False
-
-
 def _no_trips_hint(db: Session, *, limit: int = 8) -> list[str]:
     """A single context block listing real active routes when no trip matched.
 
@@ -511,23 +277,6 @@ def _no_trips_hint(db: Session, *, limit: int = 8) -> list[str]:
     ]
 
 
-def _trip_ordering(query_text: str) -> tuple[list, bool]:
-    """Decide ORDER BY columns and whether to reverse rows for display.
-
-    Precedence: explicit price sort > latest/most-distant > default soonest.
-    """
-    price_dir = _price_sort(query_text)
-    if price_dir == "asc":
-        return [Trip.price_egp.asc(), Trip.trip_date.asc(), Trip.departure_time.asc()], False
-    if price_dir == "desc":
-        return [Trip.price_egp.desc(), Trip.trip_date.asc(), Trip.departure_time.asc()], False
-    if _wants_latest_trip(query_text):
-        # Fetch the most distant trips, then reverse so the block reads
-        # chronologically with the latest trip last.
-        return [Trip.trip_date.desc(), Trip.departure_time.desc()], True
-    return [Trip.trip_date.asc(), Trip.departure_time.asc()], False
-
-
 def _fetch_trip_blocks(
     db: Session,
     query_text: str,
@@ -536,15 +285,17 @@ def _fetch_trip_blocks(
     limit: int | None = None,
     debug: dict | None = None,
     fallback_text: str | None = None,
+    understanding: ChatUnderstanding | None = None,
 ) -> list[str]:
+    u = understanding or ChatUnderstanding()
     route_ids = _resolve_route_ids(db, query_text, search_terms, fallback_text=fallback_text)
     if not route_ids:
         return _no_trips_hint(db)
 
     if limit is None:
-        limit = _trip_limit(query_text)
+        limit = _trip_limit(u)
 
-    order_cols, reverse_for_display = _trip_ordering(query_text)
+    order_cols, reverse_for_display = _trip_ordering(u)
 
     query = (
         db.query(Trip)
@@ -613,9 +364,13 @@ def _fetch_trip_blocks(
 
     routes_shown = "، ".join(sorted({f"{t.route.origin} → {t.route.destination}" for t in rows}))
     return [
-        f"[Trips] {len(rows)} matching trip(s) for {routes_shown} are shown to the user "
-        "as a table (date, time, class, seats, price). Reply with only a short one-line "
-        "intro; do NOT list the trips or build a table yourself."
+        f"[Trips] {len(rows)} matching trip(s) for {routes_shown} with live prices in EGP "
+        "ARE available and are shown to the user as a table directly below your reply "
+        "(date, time, class, seats, price). Answer affirmatively with ONE short friendly "
+        "intro line (e.g. \"Here are the trips:\" / \"إليك الرحلات:\"). Do NOT list trips "
+        "or build a table yourself. NEVER say you can't provide prices/schedules, don't "
+        "have the data, or tell them to check the app or website for prices — the table "
+        "already shows every price."
     ]
 
 
@@ -631,38 +386,6 @@ def _merge_context_parts(*groups: list[str], limit: int = 10) -> str:
             if len(merged) >= limit:
                 return "\n\n---\n\n".join(merged)
     return "\n\n---\n\n".join(merged)
-
-
-def _detect_content_intents(query: str, search_terms: list[str]) -> set[str]:
-    """Map the user question to KB content types to load."""
-    intents: set[str] = set()
-
-    if _should_include_trips(query, search_terms):
-        intents.add("trips")
-    if _mentions_stations(query):
-        intents.add("stations")
-    if _mentions_destination_topic(query):
-        intents.add("destinations")
-    if _mentions_services(query):
-        intents.add("services")
-    if _mentions_general_company(query):
-        intents.add("about")
-    if _mentions_policies(query):
-        intents.add("policies")
-    if _mentions_booking(query) or _mentions_faq(query):
-        intents.add("faq")
-    if "gobus" in query.lower() or "جوباص" in query:
-        if not intents or intents == {"faq"}:
-            intents.add("faq")
-
-    if not intents:
-        intents.add("faq")
-        if _mentions_destination(query):
-            intents.add("destinations")
-        if _should_include_trips(query, search_terms):
-            intents.add("trips")
-
-    return intents
 
 
 def _fetch_kb_category_blocks(
@@ -917,87 +640,123 @@ def retrieve_context(
     history_text: str | None = None,
     extra_query: str | None = None,
     skip_structured: bool = False,
+    understanding: ChatUnderstanding | None = None,
 ) -> str:
     """Build the KB context string for a user query.
 
-    Pass a mutable ``debug`` dict to capture diagnostic info (currently the
-    compiled trips SQL under key ``trips_sql``) for display in the UI.
-    ``history_text`` is recent conversation text used to resolve the route for
-    follow-up trip questions that don't name one ("the latest 5 trips").
-    ``extra_query`` is an LLM-normalized version of the question (EN/Franco place
-    names translated to Arabic). It is used ONLY to add place-matching search
-    terms — intent detection and qualifiers always use the ORIGINAL query, so a
-    bad rewrite can never change what kind of answer the user gets.
+    Routing (what to fetch) comes from ``understanding`` — an LLM classification
+    of the message plus conversation context. ``extra_query`` adds normalized
+    place-matching search terms from the understanding/search rewrite step.
     """
     q = query.strip()
     if not q:
         return ""
 
-    search_terms = _expand_search_terms(q, db)
-    # Merge in terms from the normalized rewrite (for matching only).
-    if extra_query and extra_query.strip() and extra_query.strip() != q:
+    u = understanding or ChatUnderstanding(search_query=q)
+    primary_query = (u.search_query or q).strip()
+    search_terms = _expand_search_terms(primary_query, db)
+    if extra_query and extra_query.strip() and extra_query.strip() not in {q, primary_query}:
         seen = set(search_terms)
         for term in _expand_search_terms(extra_query.strip(), db):
             if term not in seen:
                 seen.add(term)
                 search_terms.append(term)
-    intents = _detect_content_intents(q, search_terms)
+    # Also expand the raw user message so colloquial phrasing still matches routes.
+    if primary_query != q:
+        seen = set(search_terms)
+        for term in _expand_search_terms(q, db):
+            if term not in seen:
+                seen.add(term)
+                search_terms.append(term)
 
-    # Complaint / ticket flows should not attach trip/station/destination cards.
-    if skip_structured or detect_ticket_intent(q) == "raise":
+    intents = set(u.content_intents)
+    if not intents:
+        intents = {"faq"}
+
+    if not u.wants_live_trips:
+        intents.discard("trips")
+
+    if skip_structured or u.in_complaint_flow:
         intents -= {"trips", "stations", "destinations"}
 
-    # Elliptical trip follow-up ("the latest 5") with a route remembered from the
-    # conversation → treat as a trip query so we fetch fresh data rather than
-    # letting the model reconstruct trips from earlier messages.
-    if "trips" not in intents and history_text and _is_trip_followup(q):
+    # Follow-up trip question with route from conversation history.
+    if u.use_history_for_route and "trips" not in intents and history_text:
         fb_both, fb_single = _match_routes(db, history_text, _expand_search_terms(history_text, db))
         if fb_both or fb_single:
             intents.add("trips")
 
-    # A bare station name or area mention ("التجمع الخامس", "شارع التسعين") should
-    # load station data even without an explicit "station/nearest" keyword — but
-    # NOT for trip/destination questions where the place is a route endpoint
-    # (e.g. "next trip to Dahab" must not show a Dahab station card).
-    if (
-        "stations" not in intents
-        and "trips" not in intents
-        and "destinations" not in intents
-        and not skip_structured
-        and detect_ticket_intent(q) != "raise"
-        and _query_matches_station(db, q, search_terms)
-    ):
-        intents.add("stations")
-
-    if _mentions_stations(q):
+    if "stations" in intents:
         search_terms.extend(["محطة", "station", "map", "خريطة"])
-    if _mentions_general_company(q):
+    if "about" in intents:
         search_terms.extend(["جوباص", "جو باص", "شركة", "مساهمة", "gobus", "about", "company"])
-    if _mentions_booking(q):
+    if u.booking_related or "faq" in intents:
         search_terms.extend(["حجز", "booking", "ticket", "تذكرة"])
 
+    route_history = history_text
+
     groups: list[list[str]] = []
+    live_trips = False
+    live_stations = False
     for content_type in CONTENT_TYPE_ORDER:
         if content_type not in intents:
             continue
+        # FAQ articles often say "check the app for prices" — that contradicts a live
+        # trips/stations table already rendered below the reply.
+        if live_trips and content_type == "faq":
+            continue
+        if live_stations and content_type == "faq":
+            continue
         if content_type == "trips":
-            groups.append(
-                _fetch_trip_blocks(db, q, search_terms, debug=debug, fallback_text=history_text)
+            trip_blocks = _fetch_trip_blocks(
+                db,
+                primary_query,
+                search_terms,
+                debug=debug,
+                fallback_text=route_history,
+                understanding=u,
             )
+            groups.append(trip_blocks)
+            if debug and debug.get("trips"):
+                live_trips = True
         elif content_type == "stations":
-            groups.append(_fetch_station_blocks(db, q, search_terms, debug=debug))
+            station_blocks = _fetch_station_blocks(db, primary_query, search_terms, debug=debug)
+            groups.append(station_blocks)
+            if debug and debug.get("stations"):
+                live_stations = True
         elif content_type == "destinations":
-            groups.append(_fetch_destination_blocks(db, q, search_terms, debug=debug))
+            groups.append(_fetch_destination_blocks(db, primary_query, search_terms, debug=debug))
         elif content_type == "services":
-            groups.append(_fetch_service_blocks(db, search_terms))
+            svc_blocks = _fetch_service_blocks(db, search_terms)
+            if u.wants_service_info:
+                bus_classes = (
+                    db.query(KbArticle)
+                    .filter(KbArticle.slug == "faq-bus-classes", KbArticle.is_active.is_(True))
+                    .first()
+                )
+                if bus_classes:
+                    block = f"[FAQ] {bus_classes.title}\n{bus_classes.content[:4000]}"
+                    if not any(bus_classes.title in b for b in svc_blocks):
+                        svc_blocks.insert(0, block)
+            groups.append(svc_blocks)
         elif content_type == "faq":
             faq_blocks = _fetch_kb_category_blocks(db, "faq", search_terms, article_limit=5)
-            if _mentions_booking(q) and not any("حجز" in b or "book" in b.lower() for b in faq_blocks):
+            if u.booking_related and not any("حجز" in b or "book" in b.lower() for b in faq_blocks):
                 booking = db.query(KbArticle).filter(KbArticle.slug == "faq-booking-gobus").first()
                 if booking:
                     faq_blocks.insert(
                         0,
                         f"[FAQ] {booking.title}\n{booking.content[:4000]}",
+                    )
+            if u.wants_service_info:
+                bus_classes = (
+                    db.query(KbArticle)
+                    .filter(KbArticle.slug == "faq-bus-classes", KbArticle.is_active.is_(True))
+                    .first()
+                )
+                if bus_classes and not any(bus_classes.title in b for b in faq_blocks):
+                    faq_blocks.insert(
+                        0,
+                        f"[FAQ] {bus_classes.title}\n{bus_classes.content[:4000]}",
                     )
             groups.append(faq_blocks)
         elif content_type == "about":
