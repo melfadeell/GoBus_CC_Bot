@@ -216,28 +216,12 @@ def _build_user_content(message: str, ocr_text: str | None = None) -> str:
     return "\n\n".join(parts)
 
 
-def _build_greeting(name: str | None, message: str, base_greeting: str) -> str:
-    """Channel greeting, name-aware. Arabic by default; English if the first
-    message is in English. Used to greet on the customer's first message on
-    non-website channels (which have no page-load greeting)."""
-    is_english = bool(re.search(r"[A-Za-z]", message or "")) and not re.search(r"[؀-ۿ]", message or "")
-    if is_english:
-        hi = f"Hello {name}!" if name else "Hello!"
-        return f"{hi} I'm the GoBus assistant. How can I help you today?"
-    hi = f"مرحباً {name}!" if name else "مرحباً!"
-    # Reuse the configured Arabic greeting body where possible.
-    body = base_greeting.replace("مرحباً!", "").strip() or "أنا مساعد جوباص. كيف يمكنني مساعدتك اليوم؟"
-    return f"{hi} {body}"
-
-
 def _prepare_turn(
     db: Session, session_id: str, channel: str, stored_content: str, image_url: str | None
 ) -> dict:
     """Sync pre-LLM DB work (runs in a thread): persist the user message, load
     bot settings + short history. Returns plain values so nothing detached is
     accessed later from the async context."""
-    existing = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
-    is_new_session = existing is None
     get_or_create_session(db, session_id, channel)
     db.add(ChatMessage(session_id=session_id, role="user", content=stored_content, image_url=image_url))
     db.flush()
@@ -247,8 +231,6 @@ def _prepare_turn(
         "system_prompt": bot.system_prompt,
         "model_name": bot.model_name or settings.openai_model,
         "history": history,
-        "is_new_session": is_new_session,
-        "greeting_ar": bot.greeting_ar,
         "hotline": bot.hotline or DEFAULT_HOTLINE,
     }
 
@@ -328,6 +310,15 @@ async def stream_chat_response(
     if raw_query and needs_rewrite(raw_query):
         corrected_query = await correct_query(raw_query, history_text)
 
+    # Ticketing intents are handled deterministically (a confirm form / ticket cards
+    # are rendered by the app); the model only writes a one-line intro.
+    ticket_mode: str | None = None
+    ticket_meta: dict | None = None
+    intent = detect_ticket_intent(raw_query)
+    user_turns = [m.get("content", "") for m in history if m.get("role") == "user"]
+    prev_user_raise = len(user_turns) >= 2 and detect_ticket_intent(user_turns[-2]) == "raise"
+    skip_structured = intent == "raise" or prev_user_raise
+
     retrieval_debug: dict = {}
     context = await asyncio.to_thread(
         retrieve_context,
@@ -337,13 +328,8 @@ async def stream_chat_response(
         debug=retrieval_debug,
         history_text=history_text,
         extra_query=corrected_query,
+        skip_structured=skip_structured,
     )
-
-    # Ticketing intents are handled deterministically (a confirm form / ticket cards
-    # are rendered by the app); the model only writes a one-line intro.
-    ticket_mode: str | None = None
-    ticket_meta: dict | None = None
-    intent = detect_ticket_intent(raw_query)
     # The customer is in a raise-ticket flow if THIS message is a complaint intent, or
     # if the IMMEDIATELY PRECEDING user turn was (i.e. the bot just asked them to
     # describe the problem and this is their answer). We deliberately look only at the
@@ -355,8 +341,6 @@ async def stream_chat_response(
         or retrieval_debug.get("stations")
         or retrieval_debug.get("destinations")
     )
-    user_turns = [m.get("content", "") for m in history if m.get("role") == "user"]
-    prev_user_raise = len(user_turns) >= 2 and detect_ticket_intent(user_turns[-2]) == "raise"
     in_raise_flow = intent == "raise" or (
         intent is None and prev_user_raise and not has_content_result
     )
@@ -401,22 +385,20 @@ async def stream_chat_response(
     if trips_sql and settings.expose_sql_debug:
         yield {"type": "meta", "sql": trips_sql}
 
-    # Stations are rendered as a deterministic card in the UI; send the structured
-    # data so the layout never depends on the model's (unreliable) formatting.
-    stations = retrieval_debug.get("stations")
-    if stations:
-        yield {"type": "meta", "stations": stations}
+    # Structured KB cards/tables are suppressed during ticket flows so a complaint
+    # question never picks up an unrelated station/destination by accident.
+    if ticket_mode is None:
+        stations = retrieval_debug.get("stations")
+        if stations:
+            yield {"type": "meta", "stations": stations}
 
-    # The destinations list is also rendered deterministically (chips) in the UI.
-    destinations = retrieval_debug.get("destinations")
-    if destinations:
-        yield {"type": "meta", "destinations": destinations}
+        destinations = retrieval_debug.get("destinations")
+        if destinations:
+            yield {"type": "meta", "destinations": destinations}
 
-    # Trips render as a deterministic table in the UI (layout + data never depend
-    # on the model); the assistant only writes a one-line intro.
-    trips = retrieval_debug.get("trips")
-    if trips:
-        yield {"type": "meta", "trips": trips}
+        trips = retrieval_debug.get("trips")
+        if trips:
+            yield {"type": "meta", "trips": trips}
 
     client = get_openai_client()
     full_response = ""
@@ -424,15 +406,6 @@ async def stream_chat_response(
     completion_tokens = 0
     total_tokens = 0
     log_error_msg: str | None = None
-
-    # Channel-aware greeting: the website greets proactively on page-load (frontend),
-    # but social channels have no page-load — so on the customer's first message we
-    # greet here, as the first part of the assistant's reply.
-    if prep.get("is_new_session") and normalized_channel != DEFAULT_CHAT_CHANNEL:
-        greeting_text = _build_greeting(customer_name, raw_query, prep.get("greeting_ar", "")) + "\n\n"
-        yield {"type": "meta", "ttft_ms": int((time.perf_counter() - started) * 1000)}
-        full_response += greeting_text
-        yield {"type": "token", "content": greeting_text}
 
     create_kwargs: dict = {
         "model": model_name,
