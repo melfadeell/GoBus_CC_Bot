@@ -64,6 +64,17 @@ Rules:
 - Use conversation context to resolve follow-ups and complaint continuations.
 - Output JSON only, no prose."""
 
+# Shorter prompt for the LLM path — same schema, less latency.
+_SYSTEM_PROMPT_COMPACT = """Classify a GoBus (Egypt intercity bus) chat turn. Return JSON only:
+ticket_intent: null|raise|check; continue_complaint_flow: bool;
+content_intents: subset of trips,stations,destinations,services,faq,about,policies;
+trip_sort: soonest|latest|cheapest|priciest; trip_limit: 1-12|null;
+bus_class: null|standard|elite|business; use_history_for_route: bool;
+wants_live_trips: bool (false for how-to-book); wants_service_info: bool;
+booking_related: bool; search_query: Arabic-normalized place/route text.
+Rules: how-to-book→faq only, no trips; trip prices/schedules→trips; class compare→faq+services;
+trip to city→trips not stations; complaint flow→no structured cards unless new travel Q."""
+
 
 @dataclass
 class ChatUnderstanding:
@@ -100,6 +111,190 @@ def _extract_bus_class(message: str) -> str | None:
     if re.search(r"\bبيزنس\b|\bبزنس\b", text, re.IGNORECASE):
         return "business"
     return None
+
+
+_ROUTE_CITY_CUES = (
+    "cairo", "alexandria", "alex", "hurghada", "dahab", "sharm", "luxor", "port said",
+    "nuweiba", "marsa", "makadi", "sokhna", "north coast",
+    "القاهرة", "الإسكندرية", "الاسكندرية", "الغردقة", "دهب", "شرم", "الأقصر", "الاقصر",
+    "بورسعيد", "نويبع", "مرسى", "مكادى", "السخنة", "الساحل",
+)
+
+
+def _mentions_route(message: str) -> bool:
+    text = (message or "").strip()
+    lower = text.lower()
+    return any(c in lower or c in text for c in _ROUTE_CITY_CUES)
+
+
+def _is_trip_schedule_query(message: str) -> bool:
+    lower = (message or "").lower()
+    return bool(
+        re.search(
+            r"\b(trip|trips|price|prices|schedule|seat|seats|next|cheapest|latest|departure|available)\b"
+            r"|سعر|رحلة|رحلات|موعد|مقعد|التالي|أرخص|ارخص|آخر|اخر",
+            lower + (message or ""),
+        )
+    )
+
+
+def _is_booking_howto(message: str) -> bool:
+    lower = (message or "").lower()
+    return bool(
+        re.search(
+            r"how (can i|do i|to) book|how to book|booking steps|ways? to book|can i book"
+            r"|كيف (أحجز|احجز|اعمل حجز)|طرق الحجز",
+            lower + (message or ""),
+        )
+    )
+
+
+def _is_service_compare(message: str) -> bool:
+    lower = (message or "").lower()
+    if not re.search(r"difference|compare|vs\.?|فرق|الفرق", lower + (message or "")):
+        return False
+    return bool(
+        _extract_bus_class(message)
+        or re.search(r"\b(standard|elite|business|gomini|golemo|جوميني|جوليمو)\b", lower)
+    )
+
+
+def _is_station_query(message: str) -> bool:
+    lower = (message or "").lower()
+    return bool(
+        re.search(
+            r"\b(station|stations|nearest|closest|where is|map|address|location)\b"
+            r"|محطة|فين|أقرب|اقرب|موقع|خريطة",
+            lower + (message or ""),
+        )
+    )
+
+
+def _apply_intent_coercion(u: ChatUnderstanding) -> None:
+    """Shared post-processing for fast + LLM paths."""
+    if u.wants_service_info:
+        u.content_intents.add("faq")
+        u.content_intents.add("services")
+        u.content_intents.discard("trips")
+    if u.booking_related and not u.wants_live_trips:
+        u.content_intents.discard("trips")
+    if not u.wants_live_trips:
+        u.content_intents.discard("trips")
+
+
+def fast_understanding(message: str, *, history: list[dict] | None = None) -> tuple[ChatUnderstanding, bool]:
+    """Local routing for common turns. Returns (understanding, confident).
+
+    When confident=True the understanding LLM can be skipped (~1–3s saved).
+    """
+    msg = (message or "").strip()
+    if not msg:
+        return _fallback(msg), False
+
+    u = ChatUnderstanding(search_query=msg)
+    u.bus_class = _extract_bus_class(msg)
+    lower = msg.lower()
+
+    if re.search(r"\bGB-\d{4}-\d{4,8}\b", msg, re.IGNORECASE):
+        u.ticket_intent = "check"
+        u.content_intents = {"faq"}
+        u.wants_live_trips = False
+        return u, True
+
+    if _is_booking_howto(msg):
+        u.booking_related = True
+        u.wants_live_trips = False
+        u.content_intents = {"faq"}
+        return u, True
+
+    if _is_service_compare(msg):
+        u.wants_service_info = True
+        u.wants_live_trips = False
+        u.content_intents = {"faq", "services"}
+        return u, True
+
+    if re.search(
+        r"\b(file a complaint|raise (a )?ticket|complain about|my complaint)\b|شكوى|عندي مشكلة",
+        lower + msg,
+    ):
+        u.ticket_intent = "raise"
+        u.wants_live_trips = False
+        u.content_intents = {"faq"}
+        return u, True
+
+    if re.search(r"\bmy (support )?ticket|ticket status|my complaint\b|تذكرتي|حالة الشكوى", lower + msg):
+        u.ticket_intent = "check"
+        u.wants_live_trips = False
+        u.content_intents = {"faq"}
+        return u, True
+
+    if _is_station_query(msg) and not _is_trip_schedule_query(msg):
+        u.wants_live_trips = False
+        u.content_intents = {"stations"}
+        return u, True
+
+    if _is_trip_schedule_query(msg) and (_mentions_route(msg) or u.bus_class):
+        u.wants_live_trips = True
+        u.content_intents = {"trips"}
+        if re.search(r"cheapest|أرخص|ارخص|lowest", lower + msg):
+            u.trip_sort = "cheapest"
+        elif re.search(r"latest|last|آخر|اخر|أحدث", lower + msg):
+            u.trip_sort = "latest"
+        elif re.search(r"priciest|most expensive|أغلى|اغلى", lower + msg):
+            u.trip_sort = "priciest"
+        m = re.search(r"\b(\d{1,2})\s*(?:trips?|رحلات?)\b", lower)
+        if m:
+            u.trip_limit = int(m.group(1))
+        if re.fullmatch(r"\s*\d{1,2}\s*", msg):
+            u.trip_limit = int(msg.strip())
+            u.use_history_for_route = True
+        if re.search(r"latest|last|cheapest|more|another|كمان|تاني|المزيد", lower + msg) and not _mentions_route(
+            msg
+        ):
+            u.use_history_for_route = True
+        return u, True
+
+    # Complaint follow-up: assistant just asked for details.
+    if history:
+        for turn in reversed(history[-4:]):
+            if turn.get("role") != "assistant":
+                continue
+            prev = (turn.get("content") or "").lower()
+            if any(
+                p in prev
+                for p in (
+                    "describe what happened",
+                    "what happened",
+                    "describe the problem",
+                    "وصف المشكلة",
+                    "ما الذي حدث",
+                )
+            ):
+                u.continue_complaint_flow = True
+                u.ticket_intent = "raise"
+                u.wants_live_trips = False
+                u.content_intents = {"faq"}
+                return u, True
+            break
+
+    _apply_intent_coercion(u)
+    return u, False
+
+
+def understanding_affects_retrieval(a: ChatUnderstanding, b: ChatUnderstanding) -> bool:
+    """True when two understandings would fetch different data."""
+    return (
+        a.content_intents != b.content_intents
+        or a.wants_live_trips != b.wants_live_trips
+        or a.in_complaint_flow != b.in_complaint_flow
+        or a.bus_class != b.bus_class
+        or a.use_history_for_route != b.use_history_for_route
+        or a.booking_related != b.booking_related
+        or a.wants_service_info != b.wants_service_info
+        or a.trip_sort != b.trip_sort
+        or a.trip_limit != b.trip_limit
+        or (a.search_query or "").strip() != (b.search_query or "").strip()
+    )
 
 
 def _fallback(message: str) -> ChatUnderstanding:
@@ -185,7 +380,8 @@ async def understand_message(
         return _fallback(msg)
 
     transcript_lines: list[str] = []
-    for turn in (history or [])[-10:]:
+    max_turns = max(2, settings.chat_understanding_history_turns)
+    for turn in (history or [])[-max_turns:]:
         role = turn.get("role", "user")
         content = (turn.get("content") or "").strip()
         if content:
@@ -201,11 +397,11 @@ async def understand_message(
         resp = await client.chat.completions.create(
             model=settings.chat_understanding_model,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": _SYSTEM_PROMPT_COMPACT},
                 {"role": "user", "content": user_content},
             ],
             temperature=0,
-            max_tokens=250,
+            max_tokens=120,
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content or "{}")

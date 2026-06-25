@@ -19,13 +19,35 @@ from app.core.constants import (
 from app.core.guardrails import HARD_GUARDRAILS
 from app.core.logging import metrics_logger
 from app.models.models import BotSettings, ChatMessage, ChatSession, Ticket
-from app.services.chat_understanding import ChatUnderstanding, understand_message
+from app.services.chat_understanding import (
+    ChatUnderstanding,
+    fast_understanding,
+    understand_message,
+    understanding_affects_retrieval,
+)
 from app.services.kb_retrieval import _HISTORY_SEP, retrieve_context
 from app.services.logs_writer import log_chat_turn, log_error, log_llm_call
-from app.services.query_understanding import correct_query, needs_rewrite
 from app.services.ticketing_agent import build_ticket_draft
 
 settings = get_settings()
+
+_bot_settings_cache: tuple[float, dict] | None = None
+
+
+def _cached_bot_config(db: Session) -> dict:
+    """In-process TTL cache for bot prompt/model/hotline (read every chat turn)."""
+    global _bot_settings_cache
+    now = time.monotonic()
+    if _bot_settings_cache and _bot_settings_cache[0] > now:
+        return _bot_settings_cache[1]
+    bot = get_bot_settings(db)
+    data = {
+        "system_prompt": bot.system_prompt,
+        "model_name": bot.model_name or settings.openai_model,
+        "hotline": bot.hotline or DEFAULT_HOTLINE,
+    }
+    _bot_settings_cache = (now + settings.bot_settings_cache_ttl, data)
+    return data
 
 
 class ChatProcessingError(Exception):
@@ -257,13 +279,13 @@ def _prepare_turn(
     get_or_create_session(db, session_id, channel)
     db.add(ChatMessage(session_id=session_id, role="user", content=stored_content, image_url=image_url))
     db.flush()
-    bot = get_bot_settings(db)
+    bot_cfg = _cached_bot_config(db)
     history = get_conversation_history(db, session_id)
     return {
-        "system_prompt": bot.system_prompt,
-        "model_name": bot.model_name or settings.openai_model,
+        "system_prompt": bot_cfg["system_prompt"],
+        "model_name": bot_cfg["model_name"],
         "history": history,
-        "hotline": bot.hotline or DEFAULT_HOTLINE,
+        "hotline": bot_cfg["hotline"],
     }
 
 
@@ -296,6 +318,107 @@ def _fire(fn: Callable, **kwargs) -> None:
         asyncio.create_task(asyncio.to_thread(fn, **kwargs))
     except RuntimeError:
         fn(**kwargs)
+
+
+def _retrieve(
+    db: Session,
+    raw_query: str,
+    understanding: ChatUnderstanding,
+    *,
+    history_text: str,
+    retrieval_debug: dict,
+    skip_structured: bool,
+) -> str:
+    corrected = understanding.search_query
+    extra = corrected if corrected.strip() != raw_query.strip() else None
+    return retrieve_context(
+        db,
+        raw_query,
+        10,
+        debug=retrieval_debug,
+        history_text=history_text,
+        extra_query=extra,
+        skip_structured=skip_structured,
+        understanding=understanding,
+    )
+
+
+async def _resolve_understanding_and_context(
+    db: Session,
+    raw_query: str,
+    history: list[dict],
+    history_text: str,
+    retrieval_debug: dict,
+) -> tuple[ChatUnderstanding, str, bool]:
+    """Return (understanding, kb_context, skip_structured)."""
+    fast_u, confident = fast_understanding(raw_query, history=history)
+
+    if confident and settings.chat_understanding_fast_path:
+        understanding = fast_u
+        skip_structured = understanding.in_complaint_flow
+        context = await asyncio.to_thread(
+            _retrieve,
+            db,
+            raw_query,
+            understanding,
+            history_text=history_text,
+            retrieval_debug=retrieval_debug,
+            skip_structured=skip_structured,
+        )
+        return understanding, context, skip_structured
+
+    if (
+        settings.chat_understanding_enabled
+        and settings.chat_speculative_retrieval
+        and settings.openai_api_key
+    ):
+        spec_debug: dict = {}
+        understand_task = asyncio.create_task(understand_message(raw_query, history=history))
+        retrieve_task = asyncio.create_task(
+            asyncio.to_thread(
+                _retrieve,
+                db,
+                raw_query,
+                fast_u,
+                history_text=history_text,
+                retrieval_debug=spec_debug,
+                skip_structured=fast_u.in_complaint_flow,
+            )
+        )
+        understanding = await understand_task
+        skip_structured = understanding.in_complaint_flow
+        if understanding_affects_retrieval(fast_u, understanding):
+            retrieval_debug.clear()
+            context = await asyncio.to_thread(
+                _retrieve,
+                db,
+                raw_query,
+                understanding,
+                history_text=history_text,
+                retrieval_debug=retrieval_debug,
+                skip_structured=skip_structured,
+            )
+        else:
+            context = await retrieve_task
+            retrieval_debug.update(spec_debug)
+        return understanding, context, skip_structured
+
+    if settings.chat_understanding_enabled and settings.openai_api_key:
+        understanding = await understand_message(raw_query, history=history)
+    else:
+        understanding = fast_u
+
+    skip_structured = understanding.in_complaint_flow
+    context = await asyncio.to_thread(
+        _retrieve,
+        db,
+        raw_query,
+        understanding,
+        history_text=history_text,
+        retrieval_debug=retrieval_debug,
+        skip_structured=skip_structured,
+    )
+    return understanding, context, skip_structured
 
 
 async def stream_chat_response(
@@ -336,33 +459,13 @@ async def stream_chat_response(
     )
     raw_query = user_message or (ocr_text or "")
 
-    # LLM understands message + conversation context to decide routing (replaces
-    # keyword/regex intent detection). Also produces a normalized search query.
-    understanding: ChatUnderstanding = await understand_message(raw_query, history=history)
-    corrected_query = understanding.search_query
-    if (
-        not settings.chat_understanding_enabled
-        and raw_query
-        and needs_rewrite(raw_query)
-    ):
-        corrected_query = await correct_query(raw_query, history_text)
+    retrieval_debug: dict = {}
+    understanding, context, skip_structured = await _resolve_understanding_and_context(
+        db, raw_query, history, history_text, retrieval_debug
+    )
 
     ticket_mode: str | None = None
     ticket_meta: dict | None = None
-    skip_structured = understanding.in_complaint_flow
-
-    retrieval_debug: dict = {}
-    context = await asyncio.to_thread(
-        retrieve_context,
-        db,
-        raw_query,
-        10,
-        debug=retrieval_debug,
-        history_text=history_text,
-        extra_query=corrected_query if corrected_query.strip() != raw_query.strip() else None,
-        skip_structured=skip_structured,
-        understanding=understanding,
-    )
     has_content_result = bool(
         retrieval_debug.get("trips")
         or retrieval_debug.get("stations")

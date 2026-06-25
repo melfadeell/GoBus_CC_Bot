@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     # LLM routing: decides content/ticket intents from message + conversation context.
     chat_understanding_enabled: bool = True
     chat_understanding_model: str = "gpt-4o-mini"
+    # Skip the understanding LLM on high-confidence local routing (saves ~1–3s/turn).
+    chat_understanding_fast_path: bool = True
+    # Overlap KB retrieval with the understanding LLM when fast path is uncertain.
+    chat_speculative_retrieval: bool = True
+    chat_understanding_history_turns: int = 6
+    # Cache editable bot prompt/settings in-process (seconds per worker).
+    bot_settings_cache_ttl: int = 60
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 720
