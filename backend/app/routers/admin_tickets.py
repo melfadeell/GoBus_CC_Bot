@@ -3,7 +3,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_admin
-from app.core.constants import TICKET_PRIORITIES, TICKET_STATUSES
+from app.core.constants import TICKET_AGENT_MESSAGE_KINDS, TICKET_PRIORITIES, TICKET_STATUSES
 from app.database import get_db
 from app.models.models import AdminUser, Ticket
 from app.schemas.schemas import (
@@ -103,8 +103,10 @@ def reply(
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket_service.add_message(
-        db, ticket, author_type="agent", body=payload.body, author_id=admin.id
+    if payload.kind not in TICKET_AGENT_MESSAGE_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid message kind")
+    ticket_service.add_agent_message(
+        db, ticket, body=payload.body, admin_id=admin.id, kind=payload.kind
     )
     db.refresh(ticket)
     return ticket

@@ -229,10 +229,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  replyAdminTicket: (id: number, body: string) =>
+  replyAdminTicket: (id: number, body: string, kind: 'reply' | 'comment' = 'reply') =>
     request<TicketDetail>(`/api/admin/tickets/${id}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, kind }),
     }),
 }
 

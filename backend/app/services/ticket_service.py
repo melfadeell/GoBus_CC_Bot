@@ -16,6 +16,7 @@ from app.core.constants import DEFAULT_HOTLINE
 from app.models.models import BotSettings, Customer, Ticket, TicketMessage
 from app.services.email_service import (
     send_email,
+    ticket_agent_reply_email,
     ticket_created_email,
     ticket_resolved_email,
 )
@@ -27,10 +28,21 @@ def _hotline(db: Session) -> str:
     return (bot.hotline if bot and bot.hotline else DEFAULT_HOTLINE)
 
 
-def _fire_email(to: str | None, subject: str, text: str, html: str | None = None) -> None:
+def _fire_email(
+    to: str | None,
+    subject: str,
+    text: str,
+    html: str | None = None,
+    *,
+    no_reply: bool = False,
+) -> None:
     if not to:
         return
-    threading.Thread(target=send_email, args=(to, subject, text, html), daemon=True).start()
+    threading.Thread(
+        target=send_email,
+        kwargs={"to": to, "subject": subject, "body_text": text, "body_html": html, "no_reply": no_reply},
+        daemon=True,
+    ).start()
 
 
 def _recipient(ticket: Ticket) -> str | None:
@@ -147,6 +159,41 @@ def add_message(
     db.commit()
     db.refresh(msg)
     return msg
+
+
+def add_agent_message(
+    db: Session,
+    ticket: Ticket,
+    *,
+    body: str,
+    admin_id: int,
+    kind: str = "reply",
+) -> TicketMessage:
+    """Add an agent thread entry. ``reply`` emails the customer (no-reply); ``comment`` is internal."""
+    author_type = "agent_comment" if kind == "comment" else "agent"
+    msg = add_message(
+        db,
+        ticket,
+        author_type=author_type,
+        body=body,
+        author_id=admin_id,
+    )
+    if kind == "reply":
+        subj, text, html = ticket_agent_reply_email(
+            ticket.ref_number,
+            ticket.subject,
+            body,
+            _recipient_name(ticket),
+            _hotline(db),
+            _lang_for(ticket),
+        )
+        _fire_email(_recipient(ticket), subj, text, html, no_reply=True)
+    return msg
+
+
+def customer_visible_messages(ticket: Ticket) -> list[TicketMessage]:
+    """Thread messages shown to the customer (hides internal agent comments)."""
+    return [m for m in ticket.messages if m.author_type != "agent_comment"]
 
 
 def set_status(db: Session, ticket: Ticket, status: str) -> Ticket:

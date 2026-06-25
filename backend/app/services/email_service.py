@@ -17,14 +17,22 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-def send_email(to: str, subject: str, body_text: str, body_html: str | None = None) -> bool:
+def send_email(
+    to: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+    *,
+    no_reply: bool = False,
+) -> bool:
     """Send (or mock-log) an email. Returns True on success/mock, False on error.
     Never raises — email is best-effort and must not break the calling flow."""
     if not settings.smtp_enabled:
         logger.info(
-            "EMAIL (mock, not sent) to=%s subject=%r\n%s",
+            "EMAIL (mock, not sent) to=%s subject=%r no_reply=%s\n%s",
             to,
             subject,
+            no_reply,
             body_text,
         )
         return True
@@ -33,6 +41,9 @@ def send_email(to: str, subject: str, body_text: str, body_html: str | None = No
     msg["From"] = settings.smtp_from
     msg["To"] = to
     msg["Subject"] = subject
+    if no_reply:
+        msg["Auto-Submitted"] = "auto-generated"
+        msg["X-Auto-Response-Suppress"] = "All"
     msg.set_content(body_text)
     if body_html:
         msg.add_alternative(body_html, subtype="html")
@@ -213,6 +224,69 @@ def ticket_resolved_email(
         f"<p>{greeting}</p><p>We're glad to let you know that your support ticket has been resolved.</p>"
         f"{_rows_html(rows, False)}"
         f"<p>If you need further assistance, please contact our hotline: <strong>{hotline}</strong>.</p>"
+        f"<p>Best regards,<br/>Customer Support Team</p>",
+        False,
+    )
+    return subject, text, html
+
+
+def ticket_agent_reply_email(
+    ref_number: str,
+    subject_line: str,
+    agent_message: str,
+    customer_name: str | None = None,
+    hotline: str = "19567",
+    lang: str = "en",
+) -> tuple[str, str, str]:
+    """Return (subject, text_body, html_body) for an agent reply emailed to the customer."""
+    name = (customer_name or "").strip()
+    body_escaped = agent_message.strip()
+    if lang == "ar":
+        subject = f"رد على تذكرتك {ref_number} - GoBus"
+        greeting = f"عزيزي {name}،" if name else "عزيزي العميل،"
+        notice = (
+            "هذا البريد للإعلام فقط. لا يمكن الرد على هذا البريد الإلكتروني. "
+            f"لمتابعة تذكرتك، يرجى الاتصال بالخط الساخن: {hotline}."
+        )
+        text = (
+            f"{greeting}\n\n"
+            f"لدينا تحديث بخصوص تذكرتك {ref_number} ({subject_line}):\n\n"
+            f"{body_escaped}\n\n"
+            f"---\n{notice}\n\n"
+            f"مع خالص التحية،\nفريق خدمة العملاء"
+        )
+        html = _wrap_html(
+            f"<p>{greeting}</p>"
+            f"<p>لدينا تحديث بخصوص تذكرتك <strong>{ref_number}</strong> "
+            f"({subject_line}):</p>"
+            f'<div style="padding:12px;border:1px solid #e5e7eb;border-radius:6px;'
+            f'background:#f9fafb;white-space:pre-wrap">{body_escaped}</div>'
+            f'<p style="margin-top:16px;font-size:12px;color:#6b7280">{notice}</p>'
+            f"<p>مع خالص التحية،<br/>فريق خدمة العملاء</p>",
+            True,
+        )
+        return subject, text, html
+
+    subject = f"Update on ticket {ref_number} - GoBus Support"
+    greeting = f"Dear {name}," if name else "Dear Customer,"
+    notice = (
+        "This is a notification only. Please do not reply to this email. "
+        f"To follow up on your ticket, please call our hotline: {hotline}."
+    )
+    text = (
+        f"{greeting}\n\n"
+        f"We have an update regarding your ticket {ref_number} ({subject_line}):\n\n"
+        f"{body_escaped}\n\n"
+        f"---\n{notice}\n\n"
+        f"Best regards,\nCustomer Support Team"
+    )
+    html = _wrap_html(
+        f"<p>{greeting}</p>"
+        f"<p>We have an update regarding your ticket <strong>{ref_number}</strong> "
+        f"({subject_line}):</p>"
+        f'<div style="padding:12px;border:1px solid #e5e7eb;border-radius:6px;'
+        f'background:#f9fafb;white-space:pre-wrap">{body_escaped}</div>'
+        f'<p style="margin-top:16px;font-size:12px;color:#6b7280">{notice}</p>'
         f"<p>Best regards,<br/>Customer Support Team</p>",
         False,
     )

@@ -109,6 +109,8 @@ class TicketCreateRequest(BaseModel):
 
 class TicketReplyRequest(BaseModel):
     body: str = Field(min_length=1, max_length=8000)
+    # Admin-only: "reply" notifies the customer by email; "comment" is internal.
+    kind: str = Field(default="reply", max_length=20)
 
 
 class TicketMessageOut(BaseModel):

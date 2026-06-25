@@ -17,6 +17,7 @@ from app.schemas.schemas import (
     OtpVerifyRequest,
     OtpVerifyResponse,
     TicketCreateRequest,
+    TicketMessageOut,
     TicketOut,
     TicketReplyRequest,
     TicketSummary,
@@ -61,6 +62,15 @@ def verify_otp_code(payload: OtpVerifyRequest, request: Request, db: Session = D
 
 
 # --- Create / list / view -------------------------------------------------
+
+def _to_customer_ticket(ticket) -> TicketOut:
+    """Customer-facing ticket view — hides internal agent comments."""
+    out = TicketOut.model_validate(ticket)
+    out.messages = [
+        TicketMessageOut.model_validate(m) for m in ticket_service.customer_visible_messages(ticket)
+    ]
+    return out
+
 
 @router.post("", response_model=TicketOut)
 @limiter.limit(settings.rate_limit_ticket)
@@ -108,7 +118,7 @@ def create_ticket(
         guest_phone=None if customer else payload.guest_phone,
         session_id=payload.session_id,
     )
-    return ticket
+    return _to_customer_ticket(ticket)
 
 
 @router.get("", response_model=list[TicketSummary])
@@ -132,7 +142,7 @@ def get_ticket(
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     _authorize_ticket_access(ticket, customer, verified_token)
-    return ticket
+    return _to_customer_ticket(ticket)
 
 
 @router.post("/{ref}/messages", response_model=TicketOut)
@@ -155,7 +165,7 @@ def reply_to_ticket(
         author_id=customer.id if customer else None,
     )
     db.refresh(ticket)
-    return ticket
+    return _to_customer_ticket(ticket)
 
 
 def _authorize_ticket_access(ticket, customer, verified_token) -> None:

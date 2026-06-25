@@ -975,6 +975,7 @@ button:disabled {
   background: #fff;
 }
 .ticket-thread-agent { background: var(--color-accent-soft, #eef2ff); border-color: var(--color-brand-accent, #c7d2fe); }
+.ticket-thread-agent_comment { background: #fffbeb; border-color: #fcd34d; border-style: dashed; }
 .ticket-thread-bot { background: var(--color-surface-muted); }
 .ticket-thread-system { background: var(--color-surface-muted); font-style: italic; }
 .ticket-thread-head { display: flex; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.2rem; }
