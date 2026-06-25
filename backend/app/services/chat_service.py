@@ -19,13 +19,35 @@ from app.core.constants import (
 from app.core.guardrails import HARD_GUARDRAILS
 from app.core.logging import metrics_logger
 from app.models.models import BotSettings, ChatMessage, ChatSession, Ticket
+from app.services.chat_understanding import (
+    ChatUnderstanding,
+    fast_understanding,
+    understand_message,
+    understanding_affects_retrieval,
+)
 from app.services.kb_retrieval import _HISTORY_SEP, retrieve_context
 from app.services.logs_writer import log_chat_turn, log_error, log_llm_call
-from app.services.query_understanding import correct_query, needs_rewrite
-from app.services.ticket_intent import detect_ticket_intent
 from app.services.ticketing_agent import build_ticket_draft
 
 settings = get_settings()
+
+_bot_settings_cache: tuple[float, dict] | None = None
+
+
+def _cached_bot_config(db: Session) -> dict:
+    """In-process TTL cache for bot prompt/model/hotline (read every chat turn)."""
+    global _bot_settings_cache
+    now = time.monotonic()
+    if _bot_settings_cache and _bot_settings_cache[0] > now:
+        return _bot_settings_cache[1]
+    bot = get_bot_settings(db)
+    data = {
+        "system_prompt": bot.system_prompt,
+        "model_name": bot.model_name or settings.openai_model,
+        "hotline": bot.hotline or DEFAULT_HOTLINE,
+    }
+    _bot_settings_cache = (now + settings.bot_settings_cache_ttl, data)
+    return data
 
 
 class ChatProcessingError(Exception):
@@ -161,12 +183,43 @@ _TICKET_DIRECTIVES = {
     ),
 }
 
+_STRUCTURED_DIRECTIVES = {
+    "trips_shown": (
+        "\n--- Live trip results (mandatory) ---\n"
+        "The app is ALREADY showing the customer a trips table with dates, times, class, "
+        "seats, and prices in EGP directly below your reply. The data exists and is visible.\n"
+        "Reply with ONLY one short intro line (e.g. \"Here are the trips from Cairo to "
+        "Hurghada:\" / \"إليك رحلات القاهرة–الغردقة:\").\n"
+        "FORBIDDEN: saying you cannot provide prices/schedules, telling them to check the "
+        "app or website for prices, or claiming you lack trip data. The table IS the answer.\n"
+    ),
+    "stations_shown": (
+        "\n--- Live station card (mandatory) ---\n"
+        "Station details (address, hours, map) are ALREADY shown as a card below your reply. "
+        "Reply with ONE short intro line only. NEVER say you can't provide the address or "
+        "to check the app — the card already shows it.\n"
+    ),
+    "destinations_shown": (
+        "\n--- Live destinations list (mandatory) ---\n"
+        "Destination chips are ALREADY shown below your reply. Reply with ONE short intro "
+        "line only. Do NOT list destinations yourself.\n"
+    ),
+    "kb_from_context": (
+        "\n--- KB answer (mandatory) ---\n"
+        "The GoBus knowledge-base context below contains the official answer to this question. "
+        "Answer from that context using Markdown bullets/headers. Do NOT say you lack specific "
+        "details, and do NOT give only generic advice when [FAQ] or [Services] blocks already "
+        "answer the question. Do NOT show or mention a trips table — this is not a schedule query.\n"
+    ),
+}
+
 
 def _build_system_prompt(
     system_prompt: str,
     context: str,
     message: str = "",
     ticket_mode: str | None = None,
+    structured_mode: str | None = None,
     hotline: str = DEFAULT_HOTLINE,
 ) -> str:
     formatting = """
@@ -182,6 +235,7 @@ yourself. Never invent trips/stations/prices, and never claim you lack data when
 context says results are shown.
 """
     ticket_directive = _TICKET_DIRECTIVES.get(ticket_mode or "", "")
+    structured_directive = _STRUCTURED_DIRECTIVES.get(structured_mode or "", "")
     kb_context = (
         context
         if context
@@ -190,7 +244,7 @@ context says results are shown.
     assembled = f"""{HARD_GUARDRAILS}
 
 {system_prompt}
-{formatting}{ticket_directive}
+{formatting}{ticket_directive}{structured_directive}
 {_reply_language_directive(message)}
 --- سياق قاعدة المعرفة (GoBus) ---
 {kb_context}
@@ -225,13 +279,13 @@ def _prepare_turn(
     get_or_create_session(db, session_id, channel)
     db.add(ChatMessage(session_id=session_id, role="user", content=stored_content, image_url=image_url))
     db.flush()
-    bot = get_bot_settings(db)
+    bot_cfg = _cached_bot_config(db)
     history = get_conversation_history(db, session_id)
     return {
-        "system_prompt": bot.system_prompt,
-        "model_name": bot.model_name or settings.openai_model,
+        "system_prompt": bot_cfg["system_prompt"],
+        "model_name": bot_cfg["model_name"],
         "history": history,
-        "hotline": bot.hotline or DEFAULT_HOTLINE,
+        "hotline": bot_cfg["hotline"],
     }
 
 
@@ -264,6 +318,107 @@ def _fire(fn: Callable, **kwargs) -> None:
         asyncio.create_task(asyncio.to_thread(fn, **kwargs))
     except RuntimeError:
         fn(**kwargs)
+
+
+def _retrieve(
+    db: Session,
+    raw_query: str,
+    understanding: ChatUnderstanding,
+    *,
+    history_text: str,
+    retrieval_debug: dict,
+    skip_structured: bool,
+) -> str:
+    corrected = understanding.search_query
+    extra = corrected if corrected.strip() != raw_query.strip() else None
+    return retrieve_context(
+        db,
+        raw_query,
+        10,
+        debug=retrieval_debug,
+        history_text=history_text,
+        extra_query=extra,
+        skip_structured=skip_structured,
+        understanding=understanding,
+    )
+
+
+async def _resolve_understanding_and_context(
+    db: Session,
+    raw_query: str,
+    history: list[dict],
+    history_text: str,
+    retrieval_debug: dict,
+) -> tuple[ChatUnderstanding, str, bool]:
+    """Return (understanding, kb_context, skip_structured)."""
+    fast_u, confident = fast_understanding(raw_query, history=history)
+
+    if confident and settings.chat_understanding_fast_path:
+        understanding = fast_u
+        skip_structured = understanding.in_complaint_flow
+        context = await asyncio.to_thread(
+            _retrieve,
+            db,
+            raw_query,
+            understanding,
+            history_text=history_text,
+            retrieval_debug=retrieval_debug,
+            skip_structured=skip_structured,
+        )
+        return understanding, context, skip_structured
+
+    if (
+        settings.chat_understanding_enabled
+        and settings.chat_speculative_retrieval
+        and settings.openai_api_key
+    ):
+        spec_debug: dict = {}
+        understand_task = asyncio.create_task(understand_message(raw_query, history=history))
+        retrieve_task = asyncio.create_task(
+            asyncio.to_thread(
+                _retrieve,
+                db,
+                raw_query,
+                fast_u,
+                history_text=history_text,
+                retrieval_debug=spec_debug,
+                skip_structured=fast_u.in_complaint_flow,
+            )
+        )
+        understanding = await understand_task
+        skip_structured = understanding.in_complaint_flow
+        if understanding_affects_retrieval(fast_u, understanding):
+            retrieval_debug.clear()
+            context = await asyncio.to_thread(
+                _retrieve,
+                db,
+                raw_query,
+                understanding,
+                history_text=history_text,
+                retrieval_debug=retrieval_debug,
+                skip_structured=skip_structured,
+            )
+        else:
+            context = await retrieve_task
+            retrieval_debug.update(spec_debug)
+        return understanding, context, skip_structured
+
+    if settings.chat_understanding_enabled and settings.openai_api_key:
+        understanding = await understand_message(raw_query, history=history)
+    else:
+        understanding = fast_u
+
+    skip_structured = understanding.in_complaint_flow
+    context = await asyncio.to_thread(
+        _retrieve,
+        db,
+        raw_query,
+        understanding,
+        history_text=history_text,
+        retrieval_debug=retrieval_debug,
+        skip_structured=skip_structured,
+    )
+    return understanding, context, skip_structured
 
 
 async def stream_chat_response(
@@ -302,47 +457,22 @@ async def stream_chat_response(
     history_text = _HISTORY_SEP.join(
         m["content"] for m in history if m["content"] != stored_content
     )
-    # Clean the query (fix glued Arabic prepositions, typos, abbreviations) before
-    # retrieval so route matching / SQL run on a correct query. The ORIGINAL query
-    # still drives intent + the assistant's answer.
     raw_query = user_message or (ocr_text or "")
-    corrected_query = raw_query
-    if raw_query and needs_rewrite(raw_query):
-        corrected_query = await correct_query(raw_query, history_text)
-
-    # Ticketing intents are handled deterministically (a confirm form / ticket cards
-    # are rendered by the app); the model only writes a one-line intro.
-    ticket_mode: str | None = None
-    ticket_meta: dict | None = None
-    intent = detect_ticket_intent(raw_query)
-    user_turns = [m.get("content", "") for m in history if m.get("role") == "user"]
-    prev_user_raise = len(user_turns) >= 2 and detect_ticket_intent(user_turns[-2]) == "raise"
-    skip_structured = intent == "raise" or prev_user_raise
 
     retrieval_debug: dict = {}
-    context = await asyncio.to_thread(
-        retrieve_context,
-        db,
-        raw_query,
-        10,
-        debug=retrieval_debug,
-        history_text=history_text,
-        extra_query=corrected_query,
-        skip_structured=skip_structured,
+    understanding, context, skip_structured = await _resolve_understanding_and_context(
+        db, raw_query, history, history_text, retrieval_debug
     )
-    # The customer is in a raise-ticket flow if THIS message is a complaint intent, or
-    # if the IMMEDIATELY PRECEDING user turn was (i.e. the bot just asked them to
-    # describe the problem and this is their answer). We deliberately look only at the
-    # previous turn — not the whole history — so an earlier, already-handled complaint
-    # doesn't hijack a later unrelated question. We also bail if this message clearly
-    # resolved to trip/station/destination data (it's a content query, not a complaint).
+
+    ticket_mode: str | None = None
+    ticket_meta: dict | None = None
     has_content_result = bool(
         retrieval_debug.get("trips")
         or retrieval_debug.get("stations")
         or retrieval_debug.get("destinations")
     )
-    in_raise_flow = intent == "raise" or (
-        intent is None and prev_user_raise and not has_content_result
+    in_raise_flow = understanding.ticket_intent == "raise" or (
+        understanding.continue_complaint_flow and not has_content_result
     )
     if in_raise_flow:
         draft = await build_ticket_draft(history, raw_query)
@@ -359,7 +489,7 @@ async def stream_chat_response(
         else:
             # Not enough detail yet — the bot asks what the problem is first.
             ticket_mode = "raise_collect"
-    elif intent == "check":
+    elif understanding.ticket_intent == "check":
         if customer_id is not None:
             ticket_mode = "check"
             tickets_list = await asyncio.to_thread(fetch_ticket_summaries, db, customer_id)
@@ -368,10 +498,24 @@ async def stream_chat_response(
             ticket_mode = "login_required"
             ticket_meta = {"type": "meta", "action": "login_required"}
 
+    structured_mode: str | None = None
+    if retrieval_debug.get("trips"):
+        structured_mode = "trips_shown"
+    elif retrieval_debug.get("stations"):
+        structured_mode = "stations_shown"
+    elif retrieval_debug.get("destinations"):
+        structured_mode = "destinations_shown"
+    elif understanding.wants_service_info or (
+        understanding.booking_related and not understanding.wants_live_trips
+    ):
+        structured_mode = "kb_from_context"
+
     messages = [
         {
             "role": "system",
-            "content": _build_system_prompt(system_prompt, context, raw_query, ticket_mode, hotline),
+            "content": _build_system_prompt(
+                system_prompt, context, raw_query, ticket_mode, structured_mode, hotline
+            ),
         }
     ]
     messages.extend(history)

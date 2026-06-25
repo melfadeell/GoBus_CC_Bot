@@ -44,8 +44,10 @@ class ArabicTextProcessor:
         self._ar_dict = phunspell.Phunspell("ar")
 
     def process_ocr_text(self, text: str) -> str:
-        text = self.fix_rtl_text(text)
-        text = self.fix_ligatures_with_dict(text)
+        # Tesseract 5+ already returns Arabic in logical reading order. Reversing
+        # lines (fix_rtl_text) was needed for legacy visual-order OCR and garbles
+        # modern Tesseract output.
+        text = self.fix_ligatures_with_dict(self._fix_ligatures(text))
         text = self._fix_reversed_parens(text)
         return self._arabic_digits_to_western(text)
 

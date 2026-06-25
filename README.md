@@ -7,6 +7,7 @@ React + FastAPI + MySQL chatbot for GoBus customer service with streaming GPT-4o
 - Python 3.11+
 - Node.js 20+
 - MySQL server running (phpMyAdmin optional — DB is auto-created on first start)
+- **Tesseract OCR** (required for chat image upload / OCR — English + Arabic)
 
 ## Setup
 
@@ -24,6 +25,25 @@ python -m venv venv
 venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 copy .env.example .env
+```
+
+**Tesseract OCR** (chat image text extraction):
+
+```bash
+# Windows
+winget install UB-Mannheim.TesseractOCR
+# Then add Arabic: download ara.traineddata into
+# C:\Program Files\Tesseract-OCR\tessdata\
+# https://github.com/tesseract-ocr/tessdata/raw/main/ara.traineddata
+
+# Linux (Debian/Ubuntu)
+sudo apt install tesseract-ocr tesseract-ocr-ara
+```
+
+If Tesseract is not on your `PATH`, set in `backend/.env`:
+
+```env
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
 
 Edit `backend/.env`:

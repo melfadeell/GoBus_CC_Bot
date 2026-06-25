@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import time
 import traceback
@@ -95,6 +96,23 @@ def _warn_weak_secrets() -> None:
 async def lifespan(app: FastAPI):
     _warn_weak_secrets()
     bootstrap_database()
+    from app.services.openai_client import get_openai_client
+    from app.services.reference_cache import (
+        active_destinations,
+        active_routes,
+        active_services,
+        active_stations,
+    )
+
+    get_openai_client()
+    await asyncio.to_thread(
+        lambda: (
+            active_routes(),
+            active_stations(),
+            active_destinations(),
+            active_services(),
+        )
+    )
     start_scheduler()
     yield
     shutdown_scheduler()
