@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRight, LogOut, Ticket as TicketIcon } from 'lucide-react'
 import {
+  ApiError,
   clearCustomerToken,
   customerApi,
   getCustomerToken,
   type CustomerProfile,
   type TicketSummary,
 } from '@/api/client'
+import { formatValidationDetail } from '@/api/validationErrors'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
 const STATUS_ORDER = ['open', 'in_progress', 'waiting_customer', 'resolved', 'closed']
@@ -17,6 +19,17 @@ export default function CustomerAccountPage() {
   const navigate = useNavigate()
   const a = t.chat.account
   const tk = t.chat.ticket
+  const validationMsgs = {
+    ...t.chat.auth.validation,
+    passwordsMismatch: t.chat.auth.passwordsMismatch,
+  }
+
+  function apiErrorMessage(err: unknown, fallback: string) {
+    if (err instanceof ApiError) {
+      return formatValidationDetail(err.detail, validationMsgs)
+    }
+    return (err as Error).message || fallback
+  }
 
   const [profile, setProfile] = useState<CustomerProfile | null>(null)
   const [tickets, setTickets] = useState<TicketSummary[]>([])
@@ -74,7 +87,7 @@ export default function CustomerAccountPage() {
       setProfile(updated)
       setPMsg(a.saved)
     } catch (e) {
-      setPErr((e as Error).message || a.updateError)
+      setPErr(apiErrorMessage(e, a.updateError))
     } finally {
       setSavingProfile(false)
     }
@@ -99,7 +112,7 @@ export default function CustomerAccountPage() {
       setNewPw('')
       setConfirmPw('')
     } catch (e) {
-      setPwErr((e as Error).message || a.passwordError)
+      setPwErr(apiErrorMessage(e, a.passwordError))
     } finally {
       setSavingPw(false)
     }

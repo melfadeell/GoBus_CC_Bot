@@ -863,6 +863,10 @@ button:disabled {
   font-size: 0.8rem;
   color: #b91c1c;
 }
+
+.ticket-error-multiline {
+  white-space: pre-line;
+}
 .ticket-actions {
   display: flex;
   gap: 0.5rem;

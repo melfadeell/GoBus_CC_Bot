@@ -1,3 +1,7 @@
+import { defaultValidationMessages, formatValidationDetail } from './validationErrors'
+
+export { formatValidationDetail, type ValidationMessages } from './validationErrors'
+
 const TOKEN_KEY = 'gobus_admin_token'
 const CUSTOMER_TOKEN_KEY = 'gobus_customer_token'
 
@@ -42,22 +46,16 @@ export async function fetchPublicInfo(): Promise<{ greeting: string; hotline: st
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  detail: unknown
+  constructor(message: string, status: number, detail?: unknown) {
     super(message)
     this.status = status
+    this.detail = detail ?? message
   }
 }
 
 function formatDetail(detail: unknown): string {
-  if (typeof detail === 'string') return detail
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item) =>
-        typeof item === 'object' && item && 'msg' in item ? String(item.msg) : String(item)
-      )
-      .join('، ')
-  }
-  return 'Request failed'
+  return formatValidationDetail(detail, defaultValidationMessages)
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -75,7 +73,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       clearToken()
       window.location.href = '/login'
     }
-    throw new ApiError(formatDetail(err.detail), res.status)
+    throw new ApiError(formatDetail(err.detail), res.status, err.detail)
   }
   if (res.status === 204) return undefined as T
   return res.json()
@@ -272,7 +270,7 @@ async function customerRequest<T>(path: string, options: RequestInit = {}): Prom
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     if (res.status === 401 && token) clearCustomerToken()
-    throw new ApiError(formatDetail(err.detail), res.status)
+    throw new ApiError(formatDetail(err.detail), res.status, err.detail)
   }
   if (res.status === 204) return undefined as T
   return res.json()

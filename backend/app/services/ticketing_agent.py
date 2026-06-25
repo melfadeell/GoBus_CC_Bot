@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from openai import OpenAIError
 
@@ -20,6 +21,10 @@ from app.core.constants import (
     DEFAULT_TICKET_PRIORITY,
     TICKET_CATEGORIES,
     TICKET_PRIORITIES,
+)
+from app.services.chat_understanding import (
+    _is_bus_booking_intent,
+    _is_origin_followup,
 )
 from app.services.openai_client import get_openai_client
 
@@ -33,6 +38,10 @@ Return ONLY a JSON object with these keys:
   happened / the specifics). false if they only expressed intent to complain or ask
   for help WITHOUT saying what the issue is (e.g. "I want to file a complaint about
   the driver" with no details).
+- ready MUST be false when the customer only wants to book a bus trip, find schedules,
+  or check prices (e.g. "book a trip to Alexandria", "I'm from Cairo") — that is
+  normal travel help, NOT a support ticket. Category "booking" is for booking
+  failures/errors, not reserving a route.
 - "question": when ready is false, a short friendly question (in the customer's
   language) asking them to describe what happened. Empty string when ready is true.
 - "category": one of {list(TICKET_CATEGORIES)}
@@ -68,8 +77,15 @@ def _coerce(raw: dict, last_user_message: str) -> dict:
     priority = raw.get("priority")
     subject = (raw.get("subject") or "").strip()
     description = (raw.get("description") or "").strip()
+    ready = bool(raw.get("ready", True))
+    if ready and (
+        _is_bus_booking_intent(last_user_message)
+        or _is_origin_followup(last_user_message)
+        or re.search(r"\bbook(ing)?\s+(a\s+)?trip\b", (subject + description).lower())
+    ):
+        ready = False
     return {
-        "ready": bool(raw.get("ready", True)),
+        "ready": ready,
         "question": (raw.get("question") or "").strip(),
         "category": category if category in TICKET_CATEGORIES else fb["category"],
         "priority": priority if priority in TICKET_PRIORITIES else fb["priority"],
