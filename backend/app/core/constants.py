@@ -46,6 +46,8 @@ TICKET_STATUSES = (
 )
 TICKET_PRIORITIES = ("low", "medium", "high", "urgent")
 DEFAULT_TICKET_PRIORITY = "medium"
+# Admin thread: "reply" emails the customer; "comment" is internal-only.
+TICKET_AGENT_MESSAGE_KINDS = ("reply", "comment")
 
 # Representative station (by exact name) for each route origin/destination city.
 # The canonical map lives in Settings (env-overridable via CITY_STATION_NAMES);

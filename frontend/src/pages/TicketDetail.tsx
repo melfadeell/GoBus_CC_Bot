@@ -23,6 +23,7 @@ export default function TicketDetail() {
   const [priority, setPriority] = useState('')
   const [saving, setSaving] = useState(false)
   const [replyBody, setReplyBody] = useState('')
+  const [messageKind, setMessageKind] = useState<'reply' | 'comment'>('reply')
   const [sending, setSending] = useState(false)
   const [adminId, setAdminId] = useState<number | null>(null)
 
@@ -83,7 +84,7 @@ export default function TicketDetail() {
     if (!ticket || !replyBody.trim()) return
     setSending(true)
     try {
-      const updated = await api.replyAdminTicket(ticket.id, replyBody.trim())
+      const updated = await api.replyAdminTicket(ticket.id, replyBody.trim(), messageKind)
       setTicket(updated)
       setReplyBody('')
     } catch (e) {
@@ -145,14 +146,35 @@ export default function TicketDetail() {
             </div>
 
             <div className="mt-4">
-              <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">{crm.reply}</label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                <button
+                  type="button"
+                  className={messageKind === 'reply' ? 'btn-accent text-sm' : 'btn-ghost text-sm'}
+                  onClick={() => setMessageKind('reply')}
+                >
+                  {crm.messageKindReply}
+                </button>
+                <button
+                  type="button"
+                  className={messageKind === 'comment' ? 'btn-accent text-sm' : 'btn-ghost text-sm'}
+                  onClick={() => setMessageKind('comment')}
+                >
+                  {crm.messageKindComment}
+                </button>
+              </div>
+              <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1">
+                {messageKind === 'reply' ? crm.reply : crm.comment}
+              </label>
               <textarea
                 className="input-field"
                 rows={3}
-                placeholder={crm.replyPlaceholder}
+                placeholder={messageKind === 'reply' ? crm.replyPlaceholder : crm.commentPlaceholder}
                 value={replyBody}
                 onChange={(e) => setReplyBody(e.target.value)}
               />
+              {messageKind === 'reply' ? (
+                <p className="text-xs text-[var(--color-text-muted)] mt-1">{crm.replyEmailHint}</p>
+              ) : null}
               <button
                 type="button"
                 className="btn-accent mt-2"
