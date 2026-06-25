@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
-import { customerApi, setCustomerToken, type CustomerProfile } from '@/api/client'
+import { ApiError, customerApi, setCustomerToken, type CustomerProfile } from '@/api/client'
+import { formatValidationDetail } from '@/api/validationErrors'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
 interface CustomerAuthModalProps {
@@ -25,6 +26,11 @@ export default function CustomerAuthModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const validationMsgs = {
+    ...a.validation,
+    passwordsMismatch: a.passwordsMismatch,
+  }
+
   async function submit() {
     setError(null)
     if (mode === 'register' && password !== confirm) {
@@ -47,7 +53,12 @@ export default function CustomerAuthModal({
       const profile = await customerApi.me()
       onAuthed(profile)
     } catch (err) {
-      setError((err as Error).message || a.authError)
+      const detail = err instanceof ApiError ? err.detail : undefined
+      setError(
+        detail !== undefined
+          ? formatValidationDetail(detail, validationMsgs)
+          : (err as Error).message || a.authError,
+      )
     } finally {
       setBusy(false)
     }
@@ -106,7 +117,7 @@ export default function CustomerAuthModal({
             </label>
           )}
 
-          {error && <div className="ticket-error">{error}</div>}
+          {error && <div className="ticket-error ticket-error-multiline">{error}</div>}
 
           <button
             type="button"

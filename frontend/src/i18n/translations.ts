@@ -100,6 +100,13 @@ export const translations = {
         authError: 'تعذر إتمام العملية. تحقق من البيانات.',
         close: 'إغلاق',
         loggedInAs: 'مسجّل الدخول كـ',
+        validation: {
+          invalidEmail: 'أدخل بريداً إلكترونياً صحيحاً',
+          invalidPhone: 'أدخل رقم هاتف صحيحاً',
+          passwordTooShort: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل',
+          nameTooShort: 'الاسم يجب أن يكون حرفين على الأقل',
+          generic: 'تحقق من البيانات وحاول مرة أخرى',
+        },
       },
       account: {
         title: 'حسابي',
@@ -612,6 +619,13 @@ export const translations = {
         authError: 'Could not complete the request. Check your details.',
         close: 'Close',
         loggedInAs: 'Logged in as',
+        validation: {
+          invalidEmail: 'Please enter a valid email address',
+          invalidPhone: 'Please enter a valid phone number',
+          passwordTooShort: 'Password must be at least 6 characters',
+          nameTooShort: 'Name must be at least 2 characters',
+          generic: 'Please check your details and try again',
+        },
       },
       account: {
         title: 'My account',
