@@ -58,6 +58,7 @@ Rules:
 - "Trip prices Cairo to Hurghada" / "next bus to Alexandria" → trips, wants_live_trips true.
 - "Difference between standard and elite" / bus classes → faq + services, wants_service_info true, wants_live_trips false. Do NOT include trips.
 - Bus ticket / "تذكرة حجز" for HOW to book → faq, NOT ticket_intent raise.
+- "I want to book a trip to Alexandria" / "حجز رحلة" / giving origin ("I'm from Cairo") during booking → trips or faq, wants_live_trips when route/schedules matter, ticket_intent MUST be null — never raise.
 - Trip to city X → trips when asking schedule/price, NOT stations (destination is a route endpoint).
 - Bare station/area name or "where is X station" → stations.
 - During complaint flow (continue_complaint_flow or ticket_intent raise): do NOT include trips/stations/destinations unless the message is clearly a new unrelated travel question.
@@ -73,7 +74,8 @@ bus_class: null|standard|elite|business; use_history_for_route: bool;
 wants_live_trips: bool (false for how-to-book); wants_service_info: bool;
 booking_related: bool; search_query: Arabic-normalized place/route text.
 Rules: how-to-book→faq only, no trips; trip prices/schedules→trips; class compare→faq+services;
-trip to city→trips not stations; complaint flow→no structured cards unless new travel Q."""
+trip to city→trips not stations; want-to-book-trip / origin follow-up→trips, ticket_intent null;
+complaint flow→no structured cards unless new travel Q."""
 
 
 @dataclass
@@ -149,6 +151,66 @@ def _is_booking_howto(message: str) -> bool:
     )
 
 
+def _is_bus_booking_intent(message: str) -> bool:
+    """Customer wants to reserve a bus trip — NOT a CRM support ticket."""
+    text = (message or "").strip()
+    lower = text.lower()
+    return bool(
+        re.search(
+            r"\b(want to|wanna|need to|i'd like to|looking to|help me)\s+book\b"
+            r"|book\s+(a\s+)?(trip|bus|ticket|ride|journey)"
+            r"|حجز\s+رحلة|أريد\s+أحجز|عايز\s+احجز|ابي\s+احجز|عاوز\s+احجز",
+            lower + text,
+        )
+    )
+
+
+def _is_origin_followup(message: str) -> bool:
+    """Short reply giving departure city after the bot asked where they travel from."""
+    text = (message or "").strip()
+    lower = text.lower()
+    return bool(
+        re.search(
+            r"^(i'?m\s+from|i\s*am\s+from|iam\s+from|im\s+from|from)\s+\S+"
+            r"|^من\s+\S+",
+            lower,
+        )
+    )
+
+
+def _origin_followup_search_query(message: str, history: list[dict] | None) -> str:
+    """Merge origin reply with prior turns so trip SQL resolves the full route."""
+    parts = [message.strip()]
+    for turn in (history or [])[-6:]:
+        content = (turn.get("content") or "").strip()
+        if content and content != message.strip():
+            parts.append(content)
+    return " ".join(parts)[:200]
+
+
+_ASSISTANT_TRAVEL_PROMPTS = (
+    "departure",
+    "depart from",
+    "where are you traveling from",
+    "where are you travelling from",
+    "specify your departure",
+    "traveling from",
+    "travelling from",
+    "book a trip",
+    "booking a trip",
+    "منين",
+    "من أين",
+    "من اين",
+    "نقطة الانطلاق",
+    "نقطة انطلاق",
+)
+
+
+def _assistant_asked_travel_detail(assistant_content: str) -> bool:
+    prev = (assistant_content or "").lower()
+    return any(p in prev for p in _ASSISTANT_TRAVEL_PROMPTS)
+
+
 def _is_service_compare(message: str) -> bool:
     lower = (message or "").lower()
     if not re.search(r"difference|compare|vs\.?|فرق|الفرق", lower + (message or "")):
@@ -163,14 +225,22 @@ def _is_station_query(message: str) -> bool:
     lower = (message or "").lower()
     return bool(
         re.search(
-            r"\b(station|stations|nearest|closest|where is|map|address|location)\b"
-            r"|محطة|فين|أقرب|اقرب|موقع|خريطة",
+            r"\b(station|stations|nearest|closest|where is|map|address|location|working hours|opening hours)\b"
+            r"|محطة|فين|أقرب|اقرب|موقع|خريطة|مواعيد",
             lower + (message or ""),
         )
     )
 
 
-def _apply_intent_coercion(u: ChatUnderstanding) -> None:
+def _clear_ticket_if_travel_booking(u: ChatUnderstanding, message: str) -> None:
+    """Bus trip booking must never open the CRM complaint form."""
+    if u.ticket_intent == "raise" or u.continue_complaint_flow:
+        if u.wants_live_trips or _is_bus_booking_intent(message) or _is_origin_followup(message):
+            u.ticket_intent = None
+            u.continue_complaint_flow = False
+
+
+def _apply_intent_coercion(u: ChatUnderstanding, message: str = "") -> None:
     """Shared post-processing for fast + LLM paths."""
     if u.wants_service_info:
         u.content_intents.add("faq")
@@ -180,6 +250,7 @@ def _apply_intent_coercion(u: ChatUnderstanding) -> None:
         u.content_intents.discard("trips")
     if not u.wants_live_trips:
         u.content_intents.discard("trips")
+    _clear_ticket_if_travel_booking(u, message)
 
 
 def fast_understanding(message: str, *, history: list[dict] | None = None) -> tuple[ChatUnderstanding, bool]:
@@ -205,6 +276,21 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
         u.booking_related = True
         u.wants_live_trips = False
         u.content_intents = {"faq"}
+        return u, True
+
+    if _is_bus_booking_intent(msg):
+        u.booking_related = True
+        u.wants_live_trips = True
+        u.content_intents = {"trips"}
+        u.ticket_intent = None
+        return u, True
+
+    if _is_origin_followup(msg) and history:
+        u.wants_live_trips = True
+        u.content_intents = {"trips"}
+        u.use_history_for_route = True
+        u.ticket_intent = None
+        u.search_query = _origin_followup_search_query(msg, history)
         return u, True
 
     if _is_service_compare(msg):
@@ -254,14 +340,17 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
             u.use_history_for_route = True
         return u, True
 
-    # Complaint follow-up: assistant just asked for details.
+    # Complaint follow-up: assistant just asked for complaint details (not travel/booking).
     if history:
         for turn in reversed(history[-4:]):
             if turn.get("role") != "assistant":
                 continue
-            prev = (turn.get("content") or "").lower()
+            prev = turn.get("content") or ""
+            if _assistant_asked_travel_detail(prev):
+                break
+            prev_lower = prev.lower()
             if any(
-                p in prev
+                p in prev_lower
                 for p in (
                     "describe what happened",
                     "what happened",
@@ -277,7 +366,7 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
                 return u, True
             break
 
-    _apply_intent_coercion(u)
+    _apply_intent_coercion(u, msg)
     return u, False
 
 
@@ -330,6 +419,11 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
         intents.discard("trips")
     if not wants_live_trips:
         intents.discard("trips")
+
+    if ticket == "raise" or bool(raw.get("continue_complaint_flow")):
+        if wants_live_trips or _is_bus_booking_intent(message) or _is_origin_followup(message):
+            ticket = None
+            raw["continue_complaint_flow"] = False
 
     trip_sort = raw.get("trip_sort") or "soonest"
     if trip_sort not in VALID_TRIP_SORT:

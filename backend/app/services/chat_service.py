@@ -27,6 +27,7 @@ from app.services.chat_understanding import (
 )
 from app.services.kb_retrieval import _HISTORY_SEP, retrieve_context
 from app.services.logs_writer import log_chat_turn, log_error, log_llm_call
+from app.services.query_understanding import correct_query
 from app.services.ticketing_agent import build_ticket_draft
 
 settings = get_settings()
@@ -196,8 +197,9 @@ _STRUCTURED_DIRECTIVES = {
     "stations_shown": (
         "\n--- Live station card (mandatory) ---\n"
         "Station details (address, hours, map) are ALREADY shown as a card below your reply. "
-        "Reply with ONE short intro line only. NEVER say you can't provide the address or "
-        "to check the app — the card already shows it.\n"
+        "Reply with ONE short intro line only (e.g. \"Here are the station details:\"). "
+        "NEVER end mid-sentence with a dangling colon and no station name. "
+        "NEVER say you can't provide the address or to check the app — the card already shows it.\n"
     ),
     "destinations_shown": (
         "\n--- Live destinations list (mandatory) ---\n"
@@ -229,10 +231,12 @@ Short paragraphs only.
 
 --- Structured results (mandatory) ---
 Trips, stations, and the destinations list are rendered to the user automatically as
-tables/cards/chips by the app. When the KB context says these are "shown to the user",
-reply with ONLY a short one-line intro and do NOT repeat, list, or re-format that data
-yourself. Never invent trips/stations/prices, and never claim you lack data when the
-context says results are shown.
+tables/cards/chips by the app ONLY when matching data was found. When the KB context says
+these are "shown to the user", reply with ONLY a short one-line intro and do NOT repeat,
+list, or re-format that data yourself. When [Stations] says no station matched, give a
+complete answer — never an incomplete intro ending with ":" and nothing after it.
+Never invent trips/stations/prices, and never claim you lack data when the context says
+results are shown.
 """
     ticket_directive = _TICKET_DIRECTIVES.get(ticket_mode or "", "")
     structured_directive = _STRUCTURED_DIRECTIVES.get(structured_mode or "", "")
@@ -356,6 +360,12 @@ async def _resolve_understanding_and_context(
     if confident and settings.chat_understanding_fast_path:
         understanding = fast_u
         skip_structured = understanding.in_complaint_flow
+        # English station queries skip the understanding LLM — normalize place names
+        # so Arabic DB matching works (e.g. "Fifth Settlement" → "التجمع الخامس").
+        if "stations" in understanding.content_intents and re.search(r"[A-Za-z]", raw_query):
+            corrected = await correct_query(raw_query, history_text=history_text)
+            if corrected.strip():
+                understanding.search_query = corrected.strip()
         context = await asyncio.to_thread(
             _retrieve,
             db,
@@ -471,7 +481,12 @@ async def stream_chat_response(
         or retrieval_debug.get("stations")
         or retrieval_debug.get("destinations")
     )
-    in_raise_flow = understanding.ticket_intent == "raise" or (
+    has_trip_results = bool(retrieval_debug.get("trips"))
+    in_raise_flow = (
+        not has_trip_results
+        and understanding.ticket_intent == "raise"
+        and not understanding.wants_live_trips
+    ) or (
         understanding.continue_complaint_flow and not has_content_result
     )
     if in_raise_flow:
@@ -529,8 +544,13 @@ async def stream_chat_response(
     if trips_sql and settings.expose_sql_debug:
         yield {"type": "meta", "sql": trips_sql}
 
-    # Structured KB cards/tables are suppressed during ticket flows so a complaint
-    # question never picks up an unrelated station/destination by accident.
+    # Structured KB cards/tables: trips always surface when fetched (even if a
+    # ticket draft was also considered). Stations/destinations stay suppressed
+    # during ticket flows to avoid unrelated cards on complaints.
+    trips = retrieval_debug.get("trips")
+    if trips:
+        yield {"type": "meta", "trips": trips}
+
     if ticket_mode is None:
         stations = retrieval_debug.get("stations")
         if stations:
@@ -539,10 +559,6 @@ async def stream_chat_response(
         destinations = retrieval_debug.get("destinations")
         if destinations:
             yield {"type": "meta", "destinations": destinations}
-
-        trips = retrieval_debug.get("trips")
-        if trips:
-            yield {"type": "meta", "trips": trips}
 
     client = get_openai_client()
     full_response = ""

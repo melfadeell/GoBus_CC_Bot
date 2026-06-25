@@ -18,13 +18,24 @@ from app.services.chat_understanding import ChatUnderstanding
 from app.utils.text_utils import normalize_arabic
 
 STATION_ALIASES: dict[str, list[str]] = {
+    "fifth settlement": ["التجمع الخامس"],
+    "5th settlement": ["التجمع الخامس"],
+    "tagamoa el khames": ["التجمع الخامس"],
+    "tagamo3 el khames": ["التجمع الخامس"],
+    "el tagamo3 el khames": ["التجمع الخامس"],
+    "street 90": ["شارع التسعين", "التجمع الخامس"],
+    "90th street": ["شارع التسعين", "التجمع الخامس"],
+    "rehab": ["مدينة الرحاب", "الرحاب"],
+    "el rehab": ["مدينة الرحاب", "الرحاب"],
+    "sheikh zayed": ["الشيخ زايد", "هايبر وان (الشيخ زايد)"],
     "giza": ["الجيزة", "جيزة"],
     "madinaty": ["مدينتي"],
     "madinty": ["مدينتي"],
     "heliopolis": ["مصر الجديدة", "الماظة", "الألماظة"],
-    "nasr city": ["مدينة نصر"],
+    "nasr city": ["مدينة نصر", "محطة مدينه نصر"],
     "maadi": ["المعادي"],
     "october": ["أكتوبر", "السادس من أكتوبر", "6 اكتوبر"],
+    "6th of october": ["السادس من اكتوبر"],
     "alexandria": ["الإسكندرية", "الاسكندرية"],
     "hurghada": ["الغردقة"],
     "sharm": ["شرم الشيخ"],
@@ -198,6 +209,25 @@ def _resolve_route_ids(
     both_ids, single_ids = _match_routes(db, query_text, search_terms)
     if both_ids:
         return both_ids
+
+    # Origin follow-up ("I'm from Cairo") + destination in history ("trip to Alex")
+    # should resolve Cairo→Alexandria, not every route touching Cairo.
+    if fallback_text:
+        combined_text = query_text + _HISTORY_SEP + fallback_text
+        combined_terms = list(search_terms)
+        seen_terms = set(combined_terms)
+        for turn in fallback_text.split(_HISTORY_SEP):
+            turn = turn.strip()
+            if not turn:
+                continue
+            for term in _expand_search_terms(turn, db):
+                if term not in seen_terms:
+                    seen_terms.add(term)
+                    combined_terms.append(term)
+        comb_both, _ = _match_routes(db, combined_text, combined_terms)
+        if comb_both:
+            return comb_both
+
     # The CURRENT turn naming a route (even one endpoint, e.g. "trip to Dahab")
     # always wins over conversation history — otherwise a route from an earlier
     # turn would hijack a clearly different new request.
@@ -451,6 +481,7 @@ _STATION_SEARCH_STOPWORDS = {
         "الاقرب", "الأقرب", "اقرب", "أقرب", "قريب", "الى", "إلى", "في", "من", "لا", "يوجد",
         "station", "stations", "nearest", "closest", "near", "the", "to", "in",
         "on", "is", "there", "map", "location", "where", "street", "gobus",
+        "working", "hours", "hour", "open", "opening", "schedule", "time", "times",
         # Generic question/conjunction words + service/class terms that are NOT stations.
         "بين", "ايه", "إيه", "الفرق", "فرق", "ماهو", "ما", "هو", "هي", "عايز", "عاوز",
         "standard", "elite", "business", "gomini", "golemo", "difference", "between",
@@ -528,7 +559,12 @@ def _fetch_station_blocks(
 
     stations = (name_matches or city_matches or addr_matches)[:limit]
     if not stations:
-        return []
+        return [
+            "[Stations] No GoBus station matched this query in the database. "
+            "Do NOT use an incomplete intro ending with a colon (e.g. \"The nearest station is:\"). "
+            "Give a complete reply: say you could not find that station/area and suggest the GoBus "
+            "app or hotline {{HOTLINE}}. No station card will be shown for this turn."
+        ]
 
     # Structured station data for deterministic frontend rendering (a card),
     # so the layout never depends on the model's formatting.
@@ -552,7 +588,9 @@ def _fetch_station_blocks(
         f"[Stations] The full details for {names} (address, working hours, and a map "
         "link) ARE available and are shown to the user as a card directly below your "
         "reply. Answer affirmatively with ONE short friendly line that points to it "
-        "(e.g. \"Here are the station details:\" / \"تفضل تفاصيل المحطة:\"). Do NOT repeat "
+        "(e.g. \"Here are the station details:\" / \"تفضل تفاصيل المحطة:\"). "
+        "Use a complete intro line — never end with a dangling colon and no station name. "
+        "Do NOT repeat "
         "the address/hours/map in your text. NEVER say you can't provide, don't have, or "
         "to check the app for the address — it is already displayed in the card."
     ]
