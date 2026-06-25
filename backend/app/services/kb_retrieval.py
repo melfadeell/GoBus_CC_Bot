@@ -309,9 +309,11 @@ def _fetch_trip_blocks(
         .filter(Trip.route_id.in_(route_ids))
         .filter(Trip.trip_date >= date.today())
         .filter(Trip.status.in_(["open", "full"]))
-        .order_by(*order_cols)
-        .limit(limit)
     )
+    if u.bus_class:
+        query = query.filter(Trip.bus_class == u.bus_class)
+
+    query = query.order_by(*order_cols).limit(limit)
 
     if debug is not None:
         debug["trips_sql"] = _compile_sql(db, query)
@@ -339,6 +341,17 @@ def _fetch_trip_blocks(
         rows.append(trip)
 
     if not rows:
+        if u.bus_class:
+            routes = active_routes()
+            route_label = "، ".join(
+                f"{r.origin} → {r.destination}"
+                for r in routes
+                if r.id in route_ids
+            ) or "the requested route"
+            return [
+                f"[Trips] (no matching upcoming {u.bus_class} class trips found for {route_label}). "
+                "Tell the user plainly and suggest another class or date if helpful."
+            ]
         return _no_trips_hint(db)
 
     # Structured rows for deterministic frontend rendering (a table), so layout +
@@ -363,8 +376,9 @@ def _fetch_trip_blocks(
         ]
 
     routes_shown = "، ".join(sorted({f"{t.route.origin} → {t.route.destination}" for t in rows}))
+    class_note = f" ({u.bus_class} class only)" if u.bus_class else ""
     return [
-        f"[Trips] {len(rows)} matching trip(s) for {routes_shown} with live prices in EGP "
+        f"[Trips] {len(rows)} matching trip(s) for {routes_shown}{class_note} with live prices in EGP "
         "ARE available and are shown to the user as a table directly below your reply "
         "(date, time, class, seats, price). Answer affirmatively with ONE short friendly "
         "intro line (e.g. \"Here are the trips:\" / \"إليك الرحلات:\"). Do NOT list trips "

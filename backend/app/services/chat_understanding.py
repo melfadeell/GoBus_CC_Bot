@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from openai import OpenAIError
@@ -23,6 +24,7 @@ VALID_CONTENT_INTENTS = frozenset(
 )
 VALID_TRIP_SORT = frozenset({"soonest", "latest", "cheapest", "priciest"})
 VALID_TICKET_INTENTS = frozenset({"raise", "check"})
+VALID_BUS_CLASSES = frozenset({"standard", "elite", "business"})
 
 _SYSTEM_PROMPT = """You analyze a GoBus customer-support chat turn and decide what the backend should fetch.
 
@@ -44,6 +46,7 @@ Return ONLY a JSON object with these keys:
   - policies: refund, cancellation, terms, privacy
 - "trip_sort": "soonest" | "latest" | "cheapest" | "priciest" — only when trips intent applies; default soonest
 - "trip_limit": integer 1-12 or null — explicit count when customer asks for N trips
+- "bus_class": null | "standard" | "elite" | "business" — set when the customer asks for ONE specific class only (e.g. "elite trips", "standard class prices"). null when any class is fine.
 - "use_history_for_route": boolean — true when the message is a follow-up that omits origin/destination but refers to a prior route (e.g. "the latest 5", "show 3 more", "cheapest one")
 - "wants_live_trips": boolean — true ONLY when the customer wants actual trip rows (schedule, price, seats, next departure) for a route. false for "how to book", booking steps, app help, or policy questions even if they say "ticket".
 - "wants_service_info": boolean — true for bus-class comparisons (standard/elite/business), service differences, GoMini/GoLemo questions.
@@ -73,11 +76,30 @@ class ChatUnderstanding:
     wants_live_trips: bool = False
     wants_service_info: bool = False
     booking_related: bool = False
+    bus_class: str | None = None
     search_query: str = ""
 
     @property
     def in_complaint_flow(self) -> bool:
         return self.ticket_intent == "raise" or self.continue_complaint_flow
+
+
+def _extract_bus_class(message: str) -> str | None:
+    """Detect a requested bus class from the user message (fallback for the LLM)."""
+    text = (message or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    for cls in VALID_BUS_CLASSES:
+        if re.search(rf"\b{re.escape(cls)}\b", lower):
+            return cls
+    if re.search(r"\bايليت\b|\bإيليت\b", text, re.IGNORECASE):
+        return "elite"
+    if re.search(r"\bستاندرد\b|\bستاندراد\b", text, re.IGNORECASE):
+        return "standard"
+    if re.search(r"\bبيزنس\b|\bبزنس\b", text, re.IGNORECASE):
+        return "business"
+    return None
 
 
 def _fallback(message: str) -> ChatUnderstanding:
@@ -131,6 +153,10 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
     if not search_query:
         search_query = fb.search_query
 
+    bus_class = raw.get("bus_class")
+    if bus_class not in VALID_BUS_CLASSES:
+        bus_class = _extract_bus_class(message)
+
     return ChatUnderstanding(
         ticket_intent=ticket,
         continue_complaint_flow=bool(raw.get("continue_complaint_flow")),
@@ -141,6 +167,7 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
         wants_live_trips=wants_live_trips,
         wants_service_info=wants_service_info,
         booking_related=booking_related,
+        bus_class=bus_class,
         search_query=search_query[:200],
     )
 
