@@ -113,7 +113,8 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
   // When the app renders its own table/card/chips, drop any table the model
   // hallucinated in its text so the user never sees duplicate/fabricated data.
   const displayContent = !isUser && hasDeterministic ? stripMarkdownTables(content) : content
-  const showExport = !isUser && !isTyping && (hasMarkdownTable(content) || hasTrips)
+  const hasTable = !isUser && (hasMarkdownTable(content) || hasTrips)
+  const showExport = hasTable && !isTyping
 
   async function exportTable() {
     const table = bubbleRef.current?.querySelector<HTMLElement>('.chat-md-table')
@@ -169,7 +170,9 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
         </div>
         <div
           ref={bubbleRef}
-          className={`message-bubble relative max-w-[min(80%,520px)] px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm ${
+          className={`message-bubble relative px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm ${
+            hasTable ? 'message-bubble--with-table' : 'max-w-[min(80%,520px)]'
+          } ${
             isUser
               ? 'bg-[var(--color-brand-primary)] text-white rounded-tr-md'
               : 'bg-white border border-[var(--color-border-default)] rounded-tl-md'

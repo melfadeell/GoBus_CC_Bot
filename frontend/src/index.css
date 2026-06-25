@@ -359,6 +359,12 @@ button:disabled {
   unicode-bidi: plaintext;
 }
 
+.message-bubble--with-table {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .chat-plain {
   white-space: pre-wrap;
   word-break: break-word;
@@ -621,13 +627,14 @@ button:disabled {
 
 .chat-md-table-wrap {
   margin: 0.5rem 0 0.7rem;
-  overflow-x: auto;
+  overflow-x: visible;
   border: 1px solid var(--color-border-default);
   border-radius: 0.6rem;
 }
 
 .chat-md-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.82rem;
 }
@@ -640,12 +647,17 @@ button:disabled {
   text-align: start;
   font-weight: 700;
   padding: 0.45rem 0.6rem;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   border-bottom: 1px solid var(--color-border-default);
 }
 
 .chat-md-td {
   padding: 0.4rem 0.6rem;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   border-bottom: 1px solid var(--color-border-default);
   vertical-align: top;
 }
@@ -676,7 +688,7 @@ button:disabled {
   .chat-channel-select {
     max-width: 6rem;
   }
-  /* Slightly denser tables so more columns fit before horizontal scroll. */
+  /* Slightly denser tables so more columns fit in the bubble width. */
   .chat-md-table {
     font-size: 0.78rem;
   }
