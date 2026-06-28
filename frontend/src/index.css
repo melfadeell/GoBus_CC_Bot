@@ -121,6 +121,8 @@ button:disabled {
 
 .table-wrap {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
 }
 
 .data-table {
@@ -133,6 +135,7 @@ button:disabled {
   padding: 0.85rem 1rem;
   border-bottom: 1px solid var(--color-border-default);
   text-align: right;
+  vertical-align: top;
 }
 
 [dir="ltr"] .data-table th,
@@ -500,6 +503,49 @@ button:disabled {
   border: 1px solid var(--color-border-default);
   font-size: 0.8rem;
   font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dest-chip:hover {
+  background: #fff;
+  border-color: var(--color-brand-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.dest-chip--active {
+  background: var(--color-brand-primary);
+  color: #fff;
+  border-color: var(--color-brand-primary);
+}
+
+.dest-chip--active:hover {
+  background: var(--color-brand-accent);
+  border-color: var(--color-brand-accent);
+  color: #fff;
+}
+
+.dest-stations-panel {
+  border-top: 1px dashed var(--color-border-default);
+  padding-top: 0.65rem;
+}
+
+.dest-stations-heading {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--color-brand-primary);
+  margin-bottom: 0.35rem;
+}
+
+.dest-stations-loading,
+.dest-stations-error,
+.dest-stations-empty {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.dest-stations-error {
+  color: #b42318;
 }
 
 /* Export-to-image button pinned to the top-trailing corner of the bubble */
@@ -627,13 +673,16 @@ button:disabled {
 
 .chat-md-table-wrap {
   margin: 0.5rem 0 0.7rem;
-  overflow-x: visible;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
   border: 1px solid var(--color-border-default);
   border-radius: 0.6rem;
 }
 
 .chat-md-table {
   width: 100%;
+  min-width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.82rem;
@@ -682,7 +731,103 @@ button:disabled {
   font-weight: 700 !important;
 }
 
+/* When exporting on mobile, restore tabular layout for a clean PNG. */
+.chat-md-table--responsive.exporting {
+  table-layout: fixed !important;
+  min-width: 36rem !important;
+}
+
+.chat-md-table--responsive.exporting .chat-md-thead {
+  display: table-header-group !important;
+}
+
+.chat-md-table--responsive.exporting tbody tr {
+  display: table-row !important;
+  padding: 0 !important;
+  border-bottom: none !important;
+}
+
+.chat-md-table--responsive.exporting .chat-md-td {
+  display: table-cell !important;
+  text-align: start !important;
+  padding: 8px 12px !important;
+}
+
+.chat-md-table--responsive.exporting .chat-md-td::before {
+  content: none !important;
+}
+
 /* --- Mobile responsiveness --- */
+@media (max-width: 768px) {
+  .table-wrap {
+    margin-inline: -0.25rem;
+  }
+
+  .data-table {
+    min-width: 36rem;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 0.55rem 0.65rem;
+    font-size: var(--font-size-xs);
+  }
+
+  /* Markdown / wide chat tables: horizontal scroll with readable column widths. */
+  .chat-md-table:not(.chat-md-table--responsive) {
+    min-width: 28rem;
+    table-layout: auto;
+  }
+
+  /* Trips table: stack rows as labeled cards on narrow screens. */
+  .chat-md-table--responsive {
+    table-layout: auto;
+    min-width: 0;
+  }
+
+  .chat-md-table--responsive .chat-md-thead {
+    display: none;
+  }
+
+  .chat-md-table--responsive tbody tr {
+    display: block;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--color-border-default);
+  }
+
+  .chat-md-table--responsive tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  .chat-md-table--responsive .chat-md-td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-bottom: none;
+    padding: 0.3rem 0.65rem;
+    text-align: end;
+  }
+
+  [dir="ltr"] .chat-md-table--responsive .chat-md-td {
+    text-align: end;
+  }
+
+  .chat-md-table--responsive .chat-md-td::before {
+    content: attr(data-label);
+    font-weight: 700;
+    color: var(--color-text-muted);
+    text-align: start;
+    flex: 0 0 42%;
+    max-width: 9rem;
+  }
+
+  .chat-md-table--responsive .chat-md-td[data-label=""]::before,
+  .chat-md-table--responsive .chat-md-td:not([data-label])::before {
+    content: none;
+  }
+}
+
 @media (max-width: 480px) {
   /* Keep the chat header controls from crowding out the title on small screens. */
   .chat-channel-select {
@@ -696,9 +841,20 @@ button:disabled {
   .chat-md-td {
     padding: 0.35rem 0.45rem;
   }
+  .chat-md-table--responsive .chat-md-td {
+    padding: 0.28rem 0.55rem;
+  }
+  .chat-md-table--responsive .chat-md-td::before {
+    flex-basis: 44%;
+    font-size: 0.74rem;
+  }
   /* Demo question rows a touch tighter. */
   .demo-item {
     font-size: 0.78rem;
+  }
+
+  .data-table {
+    min-width: 32rem;
   }
 }
 

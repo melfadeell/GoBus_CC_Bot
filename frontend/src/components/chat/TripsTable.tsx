@@ -22,7 +22,7 @@ export default function TripsTable({ trips }: TripsTableProps) {
 
   return (
     <div className="chat-md-table-wrap mt-2">
-      <table className="chat-md-table">
+      <table className="chat-md-table chat-md-table--responsive">
         <thead className="chat-md-thead">
           <tr>
             {multiRoute ? <th className="chat-md-th">{h.route}</th> : null}
@@ -40,16 +40,20 @@ export default function TripsTable({ trips }: TripsTableProps) {
           {trips.map((t, i) => (
             <tr key={i}>
               {multiRoute ? (
-                <td className="chat-md-td">{`${t.origin} → ${t.destination}`}</td>
+                <td className="chat-md-td" data-label={h.route}>{`${t.origin} → ${t.destination}`}</td>
               ) : null}
-              {hasStations ? <td className="chat-md-td">{t.departure_station || '—'}</td> : null}
-              {hasStations ? <td className="chat-md-td">{t.arrival_station || '—'}</td> : null}
-              <td className="chat-md-td">{t.date}</td>
-              <td className="chat-md-td">{t.departure}</td>
-              <td className="chat-md-td">{t.arrival}</td>
-              <td className="chat-md-td">{t.bus_class}</td>
-              <td className="chat-md-td">{`${t.available_seats}/${t.total_seats}`}</td>
-              <td className="chat-md-td">{`${t.price_egp.toFixed(2)} ${currency}`}</td>
+              {hasStations ? (
+                <td className="chat-md-td" data-label={h.from}>{t.departure_station || '—'}</td>
+              ) : null}
+              {hasStations ? (
+                <td className="chat-md-td" data-label={h.to}>{t.arrival_station || '—'}</td>
+              ) : null}
+              <td className="chat-md-td" data-label={h.date}>{t.date}</td>
+              <td className="chat-md-td" data-label={h.dep}>{t.departure}</td>
+              <td className="chat-md-td" data-label={h.arr}>{t.arrival}</td>
+              <td className="chat-md-td" data-label={h.cls}>{t.bus_class}</td>
+              <td className="chat-md-td" data-label={h.seats}>{`${t.available_seats}/${t.total_seats}`}</td>
+              <td className="chat-md-td" data-label={h.price}>{`${t.price_egp.toFixed(2)} ${currency}`}</td>
             </tr>
           ))}
         </tbody>

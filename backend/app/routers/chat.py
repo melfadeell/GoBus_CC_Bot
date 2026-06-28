@@ -3,7 +3,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
@@ -15,8 +15,9 @@ from app.core.rate_limit import get_client_ip, limiter
 settings = get_settings()
 from app.database import SessionLocal
 from app.models.models import Customer
-from app.schemas.schemas import ChatRequest, OcrResponse
+from app.schemas.schemas import ChatRequest, DestinationStationsOut, OcrResponse, StationCardOut
 from app.services.chat_service import ChatProcessingError, stream_chat_response
+from app.services.kb_retrieval import _resolve_route_destination, stations_for_destination
 from app.services.chat_uploads import resolve_attachment_path, save_chat_image
 from app.services.ocr_service import (
     ALLOWED_IMAGE_TYPES,
@@ -67,6 +68,22 @@ async def chat_ocr(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="Could not read text from image") from exc
 
     return OcrResponse(text=text)
+
+
+@router.get("/destination-stations", response_model=DestinationStationsOut)
+@limiter.limit(settings.rate_limit_chat)
+def destination_stations(
+    request: Request,
+    destination: str = Query(..., min_length=1, max_length=255),
+):
+    canonical = _resolve_route_destination(destination)
+    if not canonical:
+        raise HTTPException(status_code=404, detail="Destination not found")
+    cards = stations_for_destination(destination)
+    return DestinationStationsOut(
+        destination=canonical,
+        stations=[StationCardOut(**c) for c in cards],
+    )
 
 
 @router.post("/stream")

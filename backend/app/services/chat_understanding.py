@@ -15,6 +15,7 @@ from openai import OpenAIError
 
 from app.config import get_settings
 from app.services.openai_client import get_openai_client
+from app.utils.text_utils import normalize_arabic
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -312,6 +313,35 @@ def _is_station_query(message: str) -> bool:
     )
 
 
+_DESTINATION_LIST_CUES = {
+    normalize_arabic(c)
+    for c in (
+        "destinations", "which destinations", "what destinations", "serve", "serves",
+        "cities", "places", "routes", "وجهات", "الوجهات", "اماكن", "الاماكن", "مدن",
+        "تخدم", "بتروح", "بتروحوا", "تروحوا", "وين", "فين",
+    )
+}
+
+
+def _is_destination_list_query(message: str) -> bool:
+    nq = normalize_arabic(message or "")
+    return any(c and c in nq for c in _DESTINATION_LIST_CUES)
+
+
+def _heuristic_understanding(message: str) -> ChatUnderstanding:
+    """Keyword routing when the understanding LLM is unavailable."""
+    text = (message or "").strip()
+    u = ChatUnderstanding(content_intents={"faq"}, search_query=text)
+    if _is_destination_list_query(text):
+        u.content_intents = {"destinations"}
+    elif _is_station_query(text) and not _is_trip_schedule_query(text):
+        u.content_intents = {"stations"}
+    elif (_is_trip_schedule_query(text) or _is_travel_request(text)) and _mentions_route(text):
+        u.content_intents = {"trips"}
+        u.wants_live_trips = True
+    return u
+
+
 _BOARDING_RE = re.compile(
     r"where\s+(?:do|can|should|to)\s+(?:i\s+)?board"
     r"|boarding\s+(?:point|station|place|location|spot)"
@@ -441,6 +471,11 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
         u.content_intents = {"stations"}
         return u, True
 
+    if _is_destination_list_query(msg):
+        u.wants_live_trips = False
+        u.content_intents = {"destinations"}
+        return u, True
+
     if (_is_trip_schedule_query(msg) or _is_travel_request(msg)) and (
         _mentions_route(msg) or u.bus_class
     ):
@@ -488,11 +523,7 @@ def understanding_affects_retrieval(a: ChatUnderstanding, b: ChatUnderstanding) 
 
 
 def _fallback(message: str) -> ChatUnderstanding:
-    text = (message or "").strip()
-    return ChatUnderstanding(
-        content_intents={"faq"},
-        search_query=text,
-    )
+    return _heuristic_understanding(message)
 
 
 def _coerce(raw: dict, message: str, *, history: list[dict] | None = None) -> ChatUnderstanding:

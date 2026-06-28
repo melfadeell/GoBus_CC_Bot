@@ -747,6 +747,23 @@ def _fetch_station_blocks(
     ]
 
 
+# GoBus station names grouped by route destination (from the official station list).
+# Used when a user clicks a destination chip to show all offices in that area.
+DESTINATION_STATION_GROUPS: dict[str, list[str]] = {
+    "الإسكندرية": ["سيدي جابر _ سموحة", "محرم بك", "ميامى", "الرويسات"],
+    "الغردقة": ["الغردقة", "السقالة", "مكتب الأحياء", "سفاجا", "قرية الجونة", "سوما باي", "سهل حشيش", "القصير", "رأس سدر", "قرية تافيرا"],
+    "شرم الشيخ": ["جوباص شرم", "الوطنية", "عرب سات - نبق"],
+    "العين السخنة": ["بورتو السخنة", "جراند اوشن", "بورتو ساوث بيتش", "كانكون", "ديارا  كامب ( ماونتن فيو 1 )"],
+    "بورسعيد": ["بورسعيد وسط البلد", "ميناء بورسعيد"],
+    "دهب": ["دهب"],
+    "مرسى علم": ["مرسى علم"],
+    "مكادى": ["مكادى", "موسي كوست", "مطارما باي", "لاهاسيندا"],
+    "نويبع": ["نويبع", "طابا هايتس"],
+    "الساحل الشمالى": ["مراسى (الساحل الشمالى)", "مارينا 5", "مارينا 7", "مرسى مطروح", "الضبعة"],
+    "الأقصر": ["الأقصر"],
+}
+
+
 _DESTINATION_LIST_CUES = {
     normalize_arabic(c)
     for c in (
@@ -755,6 +772,76 @@ _DESTINATION_LIST_CUES = {
         "تخدم", "بتروح", "بتروحوا", "تروحوا", "وين", "فين",
     )
 }
+
+
+def _resolve_route_destination(city: str) -> str | None:
+    """Map a user-facing destination label to a canonical route destination."""
+    norm_city = normalize_arabic(city.strip())
+    if not norm_city:
+        return None
+    for dest in {r.destination for r in active_routes() if r.destination}:
+        norm_dest = normalize_arabic(dest)
+        if norm_dest == norm_city or norm_city in norm_dest or norm_dest in norm_city:
+            return dest
+    return None
+
+
+def _station_card(station: Station) -> dict[str, str]:
+    return {
+        "name": station.name,
+        "address": _clean_station_address(station.description),
+        "working_hours": station.working_hours or "",
+        "map_url": station.map_url or "",
+    }
+
+
+def stations_for_destination(city: str) -> list[dict[str, str]]:
+    """All active GoBus stations for a route destination (used by destination chips)."""
+    canonical = _resolve_route_destination(city)
+    if not canonical:
+        return []
+
+    by_name = {s.name: s for s in active_stations()}
+    matched: list[Station] = []
+    seen_ids: set[int] = set()
+
+    def _add(station: Station | None) -> None:
+        if station and station.id not in seen_ids:
+            seen_ids.add(station.id)
+            matched.append(station)
+
+    for name in DESTINATION_STATION_GROUPS.get(canonical, []):
+        _add(by_name.get(name))
+
+    mapped = CITY_STATION_NAMES.get(canonical)
+    if mapped:
+        _add(by_name.get(mapped))
+
+    norm_city = normalize_arabic(canonical)
+    for area, origin in NEAREST_ORIGIN_REGION.items():
+        if origin == canonical:
+            norm_area = normalize_arabic(area)
+            for station in active_stations():
+                norm_name = normalize_arabic(station.name)
+                if _term_matches(norm_area, norm_name):
+                    _add(station)
+
+    for station in active_stations():
+        norm_name = normalize_arabic(station.name)
+        if _term_matches(norm_city, norm_name):
+            _add(station)
+
+    ours = set(DESTINATION_STATION_GROUPS.get(canonical, []))
+    others = {
+        name
+        for dest, names in DESTINATION_STATION_GROUPS.items()
+        if dest != canonical
+        for name in names
+    }
+    matched = [s for s in matched if s.name in ours or s.name not in others]
+
+    matched.sort(key=lambda s: s.name)
+    return [_station_card(s) for s in matched]
 
 
 def _wants_destination_list(query: str) -> bool:

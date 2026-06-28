@@ -439,6 +439,18 @@ class OcrResponse(BaseModel):
     text: str
 
 
+class StationCardOut(BaseModel):
+    name: str
+    address: str
+    working_hours: str = ""
+    map_url: str = ""
+
+
+class DestinationStationsOut(BaseModel):
+    destination: str
+    stations: list[StationCardOut]
+
+
 class TextEnhanceRequest(BaseModel):
     text: str
 

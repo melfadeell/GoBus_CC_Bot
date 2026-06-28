@@ -177,6 +177,18 @@ def _dangling_completion(message: str, hotline: str) -> str:
     )
 
 
+def _structured_intro_fallback(structured_mode: str | None, message: str) -> str:
+    """One-line intro when structured UI is shown but the main LLM call failed."""
+    ar = bool(re.search(r"[؀-ۿ]", message or ""))
+    if structured_mode == "destinations_shown":
+        return "الوجهات متاحة أدناه." if ar else "GoBus destinations are shown below."
+    if structured_mode == "stations_shown":
+        return "تفاصيل المحطات متاحة أدناه." if ar else "Station details are shown below."
+    if structured_mode in ("trips_shown", "boarding_with_trips"):
+        return "نتائج الرحلات متاحة أدناه." if ar else "Trip results are shown below."
+    return _dangling_completion(message, DEFAULT_HOTLINE)
+
+
 _TICKET_DIRECTIVES = {
     "raise_collect": (
         "\n--- Support ticket (mandatory) ---\n"
@@ -651,6 +663,41 @@ async def stream_chat_response(
                 yield {"type": "token", "content": delta}
 
     except OpenAIError as exc:
+        if structured_shown:
+            fallback_text = _structured_intro_fallback(structured_mode, raw_query)
+            full_response = fallback_text
+            yield {"type": "token", "content": fallback_text}
+            await asyncio.to_thread(
+                _finalize_turn,
+                db,
+                session_id,
+                full_response,
+                0,
+                0,
+                0,
+            )
+            elapsed = time.perf_counter() - started
+            _fire(
+                log_chat_turn,
+                request_id=request_id,
+                session_id=session_id,
+                channel=normalized_channel,
+                client_ip=client_ip,
+                user_message=stored_content,
+                ai_response=full_response.strip(),
+                model=model_name,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                response_time_sec=elapsed,
+                has_image=bool(image_url),
+                success=True,
+                error_message=f"LLM unavailable; structured fallback used: {exc}",
+                customer_id=customer_id,
+                customer_email=customer_email,
+            )
+            return
+
         await asyncio.to_thread(db.rollback)
         log_error_msg = str(exc)
         elapsed = time.perf_counter() - started
