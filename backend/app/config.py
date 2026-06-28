@@ -10,13 +10,13 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     # Custom OpenAI-compatible endpoint base URL (blank = OpenAI default).
     openai_base_url: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.4-mini"
     # Fast, cheap model used only to clean/correct the user's query before retrieval.
-    query_rewrite_model: str = "gpt-4o-mini"
+    query_rewrite_model: str = "gpt-5.4-mini"
     query_rewrite_enabled: bool = True
     # LLM routing: decides content/ticket intents from message + conversation context.
     chat_understanding_enabled: bool = True
-    chat_understanding_model: str = "gpt-4o-mini"
+    chat_understanding_model: str = "gpt-5.4-mini"
     # Skip the understanding LLM on high-confidence local routing (saves ~1–3s/turn).
     chat_understanding_fast_path: bool = True
     # Overlap KB retrieval with the understanding LLM when fast path is uncertain.
@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     otp_ttl_minutes: int = 10
     otp_max_attempts: int = 5
     # Model used by the in-app ticketing agent to classify + draft tickets.
-    ticketing_model: str = "gpt-4o-mini"
+    ticketing_model: str = "gpt-5.4-mini"
 
     # --- Rate limits (slowapi strings; override via .env, e.g. RATE_LIMIT_CHAT="30/minute") ---
     rate_limit_chat: str = "15/minute"

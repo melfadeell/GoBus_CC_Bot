@@ -156,6 +156,27 @@ def _reply_language_directive(message: str) -> str:
     return ""
 
 
+def _is_dangling_reply(text: str) -> bool:
+    """True when the reply ends mid-sentence on a colon — the classic incomplete
+    "the nearest station is:" with nothing after it."""
+    stripped = (text or "").rstrip()
+    return bool(stripped) and stripped[-1] in {":", "："}
+
+
+def _dangling_completion(message: str, hotline: str) -> str:
+    """A complete, language-matched fallback appended when a reply would otherwise
+    be left dangling on a colon with no card/table to follow it."""
+    if re.search(r"[؀-ۿ]", message or ""):
+        return (
+            "للأسف لا تتوفر لديّ تفاصيل كافية للرد على هذا الطلب الآن. "
+            f"يرجى توضيح المدينة أو المحطة المطلوبة، أو التواصل مع الخط الساخن {hotline}."
+        )
+    return (
+        "Sorry, I don't have enough details to fully answer that right now. "
+        f"Please clarify the city or station you mean, or contact our hotline {hotline}."
+    )
+
+
 _TICKET_DIRECTIVES = {
     "raise_collect": (
         "\n--- Support ticket (mandatory) ---\n"
@@ -185,6 +206,17 @@ _TICKET_DIRECTIVES = {
 }
 
 _STRUCTURED_DIRECTIVES = {
+    "boarding_with_trips": (
+        "\n--- Nearest boarding point + trips (mandatory) ---\n"
+        "The customer named a departure city GoBus does NOT serve. A station card for the "
+        "NEAREST boarding city AND a trips table from there are shown directly below your "
+        "reply. Use the [Boarding] context block for the exact city/station names.\n"
+        "Reply in TWO short lines: (1) GoBus doesn't depart from the city they named — the "
+        "nearest boarding point is the city/station in the card; (2) a one-line intro to the "
+        "trips (e.g. \"وإليك الرحلات المتاحة من هناك:\" / \"Here are the trips from there:\").\n"
+        "FORBIDDEN: listing trips yourself, repeating the address, or claiming you lack "
+        "data — the card and table are the answer.\n"
+    ),
     "trips_shown": (
         "\n--- Live trip results (mandatory) ---\n"
         "The app is ALREADY showing the customer a trips table with dates, times, class, "
@@ -515,7 +547,9 @@ async def stream_chat_response(
 
     structured_mode: str | None = None
     if retrieval_debug.get("trips"):
-        structured_mode = "trips_shown"
+        structured_mode = (
+            "boarding_with_trips" if retrieval_debug.get("boarding") else "trips_shown"
+        )
     elif retrieval_debug.get("stations"):
         structured_mode = "stations_shown"
     elif retrieval_debug.get("destinations"):
@@ -559,6 +593,18 @@ async def stream_chat_response(
         destinations = retrieval_debug.get("destinations")
         if destinations:
             yield {"type": "meta", "destinations": destinations}
+
+    # Whether the app rendered any card/table/form below the reply. When nothing
+    # structured is shown, a reply ending on a dangling colon is genuinely broken
+    # (no card for the colon to point at) and must be completed before saving.
+    structured_shown = bool(
+        retrieval_debug.get("trips")
+        or ticket_meta is not None
+        or (
+            ticket_mode is None
+            and (retrieval_debug.get("stations") or retrieval_debug.get("destinations"))
+        )
+    )
 
     client = get_openai_client()
     full_response = ""
@@ -650,6 +696,14 @@ async def stream_chat_response(
     if cancelled and cancelled():
         await asyncio.to_thread(db.rollback)
         return
+
+    # Safety net: never leave the customer with an incomplete "...is:" reply when
+    # there's no card/table to follow it. Append a complete, language-matched line
+    # so the answer always reads as finished.
+    if not structured_shown and _is_dangling_reply(full_response):
+        completion = " " + _dangling_completion(raw_query, hotline)
+        full_response += completion
+        yield {"type": "token", "content": completion}
 
     await asyncio.to_thread(
         _finalize_turn,

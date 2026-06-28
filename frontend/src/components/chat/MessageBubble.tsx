@@ -204,10 +204,12 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
                 />
               )}
               {displayContent ? <ChatMessageContent content={displayContent} isUser={isUser} /> : null}
-              {!isUser && hasTrips ? <TripsTable trips={trips!} /> : null}
+              {/* Station card first: when a boarding point is recommended it must
+                  appear above the trips table it refers to. */}
               {!isUser && stations && stations.length > 0 ? (
                 <StationCardList stations={stations} />
               ) : null}
+              {!isUser && hasTrips ? <TripsTable trips={trips!} /> : null}
               {!isUser && destinations && destinations.length > 0 ? (
                 <div className="dest-chips mt-2">
                   {destinations.map((d) => (
