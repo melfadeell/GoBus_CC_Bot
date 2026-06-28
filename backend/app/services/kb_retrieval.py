@@ -14,7 +14,7 @@ from app.services.reference_cache import (
     active_services,
     active_stations,
 )
-from app.services.chat_understanding import ChatUnderstanding
+from app.services.chat_understanding import ChatUnderstanding, is_smalltalk
 from app.utils.text_utils import normalize_arabic
 
 STATION_ALIASES: dict[str, list[str]] = {
@@ -732,7 +732,12 @@ def retrieve_context(
         intents -= {"trips", "stations", "destinations"}
 
     # Follow-up trip question with route from conversation history.
-    if u.use_history_for_route and "trips" not in intents and history_text:
+    if (
+        u.use_history_for_route
+        and "trips" not in intents
+        and history_text
+        and not is_smalltalk(q)
+    ):
         fb_both, fb_single = _match_routes(db, history_text, _expand_search_terms(history_text, db))
         if fb_both or fb_single:
             intents.add("trips")

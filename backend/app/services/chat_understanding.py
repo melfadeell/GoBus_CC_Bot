@@ -62,6 +62,7 @@ Rules:
 - Trip to city X → trips when asking schedule/price, NOT stations (destination is a route endpoint).
 - Bare station/area name or "where is X station" → stations.
 - During complaint flow (continue_complaint_flow or ticket_intent raise): do NOT include trips/stations/destinations unless the message is clearly a new unrelated travel question.
+- Pure greetings/thanks/ack only (hi, hello, thanks, ok with no travel ask) → faq only, wants_live_trips false, use_history_for_route false — never re-fetch prior trip routes.
 - Use conversation context to resolve follow-ups and complaint continuations.
 - Output JSON only, no prose."""
 
@@ -75,7 +76,7 @@ wants_live_trips: bool (false for how-to-book); wants_service_info: bool;
 booking_related: bool; search_query: Arabic-normalized place/route text.
 Rules: how-to-book→faq only, no trips; trip prices/schedules→trips; class compare→faq+services;
 trip to city→trips not stations; want-to-book-trip / origin follow-up→trips, ticket_intent null;
-complaint flow→no structured cards unless new travel Q."""
+complaint flow→no structured cards unless new travel Q; pure hi/hello/thanks→faq only, no history trips."""
 
 
 @dataclass
@@ -221,6 +222,66 @@ def _is_service_compare(message: str) -> bool:
     )
 
 
+_SMALLTALK_RE = re.compile(
+    r"^(?:"
+    r"hi(?:\s+there|\s+again)?|"
+    r"hello(?:\s+there|\s+again)?|"
+    r"hey(?:\s+there)?|"
+    r"hiya|howdy|yo|sup|"
+    r"good\s+(?:morning|afternoon|evening|night)|"
+    r"thanks?(?:\s+you)?|thank\s+you|thx|ty|"
+    r"ok(?:ay)?|k|cool|great|nice|perfect|awesome|"
+    r"bye|goodbye|see\s+ya|"
+    r"مرحبا?|أ?هلا+|السلام\s+عليكم|"
+    r"شكرا?|متشكر|"
+    r"تمام|اوك|طيب"
+    r")[\s!.?,]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_COMPLAINT_DETAIL_PROMPTS = (
+    "describe what happened",
+    "what happened",
+    "describe the problem",
+    "وصف المشكلة",
+    "ما الذي حدث",
+)
+
+
+def _assistant_awaiting_complaint_detail(history: list[dict] | None) -> bool:
+    """True when the bot just asked the customer to describe their complaint."""
+    if not history:
+        return False
+    for turn in reversed(history[-4:]):
+        if turn.get("role") != "assistant":
+            continue
+        prev = turn.get("content") or ""
+        if _assistant_asked_travel_detail(prev):
+            return False
+        prev_lower = prev.lower()
+        return any(p in prev_lower for p in _COMPLAINT_DETAIL_PROMPTS)
+    return False
+
+
+def is_smalltalk(message: str, *, history: list[dict] | None = None) -> bool:
+    """True when the turn is only a greeting/thanks/ack — no travel or ticket intent."""
+    msg = (message or "").strip()
+    if not msg or len(msg) > 80:
+        return False
+    if _assistant_awaiting_complaint_detail(history):
+        return False
+    return bool(_SMALLTALK_RE.match(msg))
+
+
+def _smalltalk_understanding(message: str) -> ChatUnderstanding:
+    return ChatUnderstanding(
+        content_intents={"faq"},
+        search_query=(message or "").strip(),
+        wants_live_trips=False,
+        use_history_for_route=False,
+    )
+
+
 def _is_station_query(message: str) -> bool:
     lower = (message or "").lower()
     return bool(
@@ -349,22 +410,16 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
             if _assistant_asked_travel_detail(prev):
                 break
             prev_lower = prev.lower()
-            if any(
-                p in prev_lower
-                for p in (
-                    "describe what happened",
-                    "what happened",
-                    "describe the problem",
-                    "وصف المشكلة",
-                    "ما الذي حدث",
-                )
-            ):
+            if any(p in prev_lower for p in _COMPLAINT_DETAIL_PROMPTS):
                 u.continue_complaint_flow = True
                 u.ticket_intent = "raise"
                 u.wants_live_trips = False
                 u.content_intents = {"faq"}
                 return u, True
             break
+
+    if is_smalltalk(msg, history=history):
+        return _smalltalk_understanding(msg), True
 
     _apply_intent_coercion(u, msg)
     return u, False
@@ -394,7 +449,7 @@ def _fallback(message: str) -> ChatUnderstanding:
     )
 
 
-def _coerce(raw: dict, message: str) -> ChatUnderstanding:
+def _coerce(raw: dict, message: str, *, history: list[dict] | None = None) -> ChatUnderstanding:
     fb = _fallback(message)
     ticket = raw.get("ticket_intent")
     if ticket not in VALID_TICKET_INTENTS:
@@ -446,7 +501,7 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
     if bus_class not in VALID_BUS_CLASSES:
         bus_class = _extract_bus_class(message)
 
-    return ChatUnderstanding(
+    u = ChatUnderstanding(
         ticket_intent=ticket,
         continue_complaint_flow=bool(raw.get("continue_complaint_flow")),
         content_intents=intents,
@@ -459,6 +514,13 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
         bus_class=bus_class,
         search_query=search_query[:200],
     )
+    if is_smalltalk(message, history=history):
+        u.wants_live_trips = False
+        u.use_history_for_route = False
+        u.content_intents = {"faq"}
+        u.ticket_intent = None
+        u.continue_complaint_flow = False
+    return u
 
 
 async def understand_message(
@@ -470,6 +532,8 @@ async def understand_message(
     msg = (message or "").strip()
     if not msg:
         return _fallback(msg)
+    if is_smalltalk(msg, history=history):
+        return _smalltalk_understanding(msg)
     if not settings.openai_api_key or not settings.chat_understanding_enabled:
         return _fallback(msg)
 
@@ -499,7 +563,7 @@ async def understand_message(
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content or "{}")
-        return _coerce(raw, msg)
+        return _coerce(raw, msg, history=history)
     except (OpenAIError, json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.warning("Chat understanding failed (%s); using safe fallback", exc)
         return _fallback(msg)
