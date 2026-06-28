@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
-import { Bot, Check, Copy, Database, Download, MapPin, User, Zap } from 'lucide-react'
+import { Bot, Check, Copy, Database, Download, User, Zap } from 'lucide-react'
 import ChatMessageContent from './ChatMessageContent'
+import DestinationChips from './DestinationChips'
 import StationCardList from './StationCard'
 import TripsTable from './TripsTable'
 import TicketForm from './TicketForm'
@@ -158,7 +159,7 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
 
   return (
     <div className="fade-in">
-      <div className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : ''}`}>
+      <div className={`flex gap-2.5 min-w-0 ${isUser ? 'flex-row-reverse' : ''}`}>
         <div
           className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center shadow-sm"
           style={{
@@ -204,19 +205,14 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
                 />
               )}
               {displayContent ? <ChatMessageContent content={displayContent} isUser={isUser} /> : null}
-              {!isUser && hasTrips ? <TripsTable trips={trips!} /> : null}
+              {/* Station card first: when a boarding point is recommended it must
+                  appear above the trips table it refers to. */}
               {!isUser && stations && stations.length > 0 ? (
                 <StationCardList stations={stations} />
               ) : null}
+              {!isUser && hasTrips ? <TripsTable trips={trips!} /> : null}
               {!isUser && destinations && destinations.length > 0 ? (
-                <div className="dest-chips mt-2">
-                  {destinations.map((d) => (
-                    <span key={d} className="dest-chip">
-                      <MapPin size={12} />
-                      {d}
-                    </span>
-                  ))}
-                </div>
+                <DestinationChips destinations={destinations} />
               ) : null}
               {!isUser && ticketDraft ? (
                 <TicketForm

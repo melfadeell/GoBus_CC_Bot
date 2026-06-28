@@ -14,7 +14,7 @@ from app.services.reference_cache import (
     active_services,
     active_stations,
 )
-from app.services.chat_understanding import ChatUnderstanding
+from app.services.chat_understanding import ChatUnderstanding, is_smalltalk
 from app.utils.text_utils import normalize_arabic
 
 STATION_ALIASES: dict[str, list[str]] = {
@@ -61,6 +61,57 @@ DESTINATION_ALIASES: dict[str, list[str]] = {
     "luxor": ["الأقصر"],
     "sokhna": ["العين السخنة", "السخنة"],
 }
+
+# Areas GoBus does NOT depart from → the nearest city that DOES (the recommended
+# boarding point). Used when a customer names an origin with no route so we can
+# still show them where to board and the trips from there. Values MUST be real
+# route origins (so a route resolves) and have an entry in CITY_STATION_NAMES.
+NEAREST_ORIGIN_REGION: dict[str, str] = {
+    # Greater Cairo metro → board in Cairo (عبد المنعم رياض)
+    "الجيزة": "القاهرة",
+    "جيزة": "القاهرة",
+    "giza": "القاهرة",
+    "الهرم": "القاهرة",
+    "haram": "القاهرة",
+    "فيصل": "القاهرة",
+    "6 اكتوبر": "القاهرة",
+    "السادس من اكتوبر": "القاهرة",
+    "اكتوبر": "القاهرة",
+    "october": "القاهرة",
+    "الشيخ زايد": "القاهرة",
+    "sheikh zayed": "القاهرة",
+    "التجمع الخامس": "القاهرة",
+    "التجمع": "القاهرة",
+    "fifth settlement": "القاهرة",
+    "مدينة نصر": "القاهرة",
+    "nasr city": "القاهرة",
+    "المعادي": "القاهرة",
+    "maadi": "القاهرة",
+    "حلوان": "القاهرة",
+    "helwan": "القاهرة",
+    "مصر الجديدة": "القاهرة",
+    "heliopolis": "القاهرة",
+    "الرحاب": "القاهرة",
+    "rehab": "القاهرة",
+    "مدينتي": "القاهرة",
+    "madinaty": "القاهرة",
+    "العبور": "القاهرة",
+    "الشروق": "القاهرة",
+    "بدر": "القاهرة",
+    "بنها": "القاهرة",
+    "القليوبية": "القاهرة",
+    "شبرا": "القاهرة",
+    # Alexandria area → board in Alexandria (سيدي جابر _ سموحة)
+    "برج العرب": "الإسكندرية",
+    "borg el arab": "الإسكندرية",
+    "العجمي": "الإسكندرية",
+    "ابو قير": "الإسكندرية",
+    "ميامي": "الإسكندرية",
+}
+
+# Origin prepositions (Arabic + Franco/English) that mark the city the customer is
+# departing FROM, so "to Giza" (a destination) never triggers a boarding swap.
+_ORIGIN_MARKER = r"(?:from|frm|mn|men|min|m3a|من|مـن)"
 
 KB_CATEGORY_LABELS = {
     "services": "Services",
@@ -307,6 +358,68 @@ def _no_trips_hint(db: Session, *, limit: int = 8) -> list[str]:
     ]
 
 
+def _route_origin_city(route_id: int) -> str | None:
+    for route in active_routes():
+        if route.id == route_id:
+            return route.origin
+    return None
+
+
+def _station_for_city(city: str) -> Station | None:
+    """The canonical boarding station record for a route-origin city."""
+    name = CITY_STATION_NAMES.get(city)
+    if not name:
+        return None
+    for station in active_stations():
+        if station.name == name:
+            return station
+    return None
+
+
+def _mentioned_unserved_origin(query_text: str) -> tuple[str, str] | None:
+    """Detect a departure city the customer named that GoBus does NOT serve.
+
+    Returns (mentioned_area, nearest_origin_city) or None. The area must follow an
+    origin marker ("from"/"mn"/"من") so a *destination* ("to Giza") is never treated
+    as a boarding swap.
+    """
+    norm_query = normalize_arabic(query_text)
+    lower_query = query_text.lower()
+    for area, origin_city in NEAREST_ORIGIN_REGION.items():
+        if re.search(r"[؀-ۿ]", area):
+            hay, needle = norm_query, normalize_arabic(area)
+        else:
+            hay, needle = lower_query, area.lower()
+        if not needle or needle not in hay:
+            continue
+        if re.search(rf"{_ORIGIN_MARKER}\s+(?:\S+\s+){{0,2}}{re.escape(needle)}", hay):
+            return area, origin_city
+    return None
+
+
+def _resolve_boarding_recommendation(query_text: str, route_ids: list[int]) -> dict | None:
+    """When the customer named an unserved departure city, pick the nearest GoBus
+    origin that reaches the destination and recommend its boarding station."""
+    found = _mentioned_unserved_origin(query_text)
+    if not found:
+        return None
+    mentioned_area, nearest_city = found
+
+    # Prefer the nearest valid origin's route to the destination when it serves it;
+    # otherwise fall back to whatever origin does serve the destination.
+    nearest_route_ids = [rid for rid in route_ids if _route_origin_city(rid) == nearest_city]
+    chosen_ids = nearest_route_ids or route_ids
+    actual_origin = _route_origin_city(chosen_ids[0]) if chosen_ids else None
+    if not actual_origin or actual_origin == mentioned_area:
+        return None
+    return {
+        "mentioned_area": mentioned_area,
+        "origin_city": actual_origin,
+        "station": _station_for_city(actual_origin),
+        "route_ids": chosen_ids,
+    }
+
+
 def _fetch_trip_blocks(
     db: Session,
     query_text: str,
@@ -321,6 +434,12 @@ def _fetch_trip_blocks(
     route_ids = _resolve_route_ids(db, query_text, search_terms, fallback_text=fallback_text)
     if not route_ids:
         return _no_trips_hint(db)
+
+    # If the customer named a city GoBus doesn't depart from, narrow the trips to the
+    # nearest valid origin so the table matches the boarding station we recommend.
+    recommendation = _resolve_boarding_recommendation(query_text, route_ids)
+    if recommendation:
+        route_ids = recommendation["route_ids"]
 
     if limit is None:
         limit = _trip_limit(u)
@@ -405,9 +524,40 @@ def _fetch_trip_blocks(
             for t in rows
         ]
 
+    blocks: list[str] = []
+
+    # Boarding recommendation: GoBus doesn't depart from the city the customer named,
+    # so surface the nearest origin's station card + a note explaining the swap.
+    station = recommendation["station"] if recommendation else None
+    if recommendation and station is not None:
+        if debug is not None:
+            debug["stations"] = [
+                {
+                    "name": station.name,
+                    "address": _clean_station_address(station.description),
+                    "working_hours": station.working_hours or "",
+                    "map_url": station.map_url or "",
+                }
+            ]
+            debug["boarding"] = {
+                "mentioned_area": recommendation["mentioned_area"],
+                "origin_city": recommendation["origin_city"],
+                "station_name": station.name,
+            }
+        blocks.append(
+            f"[Boarding] GoBus has NO departures from {recommendation['mentioned_area']}. "
+            f"The nearest GoBus boarding station is in {recommendation['origin_city']} "
+            f"({station.name}) — shown to the user as a card directly below your reply. "
+            "The trips below all depart from there. In your reply, FIRST tell the customer "
+            f"plainly that GoBus does not depart from {recommendation['mentioned_area']} and "
+            f"the nearest boarding point is {recommendation['origin_city']} ({station.name}), "
+            "THEN add ONE short line pointing them to the trips/card below. Keep it to two "
+            "short lines and do NOT repeat the address — it is in the card."
+        )
+
     routes_shown = "، ".join(sorted({f"{t.route.origin} → {t.route.destination}" for t in rows}))
     class_note = f" ({u.bus_class} class only)" if u.bus_class else ""
-    return [
+    blocks.append(
         f"[Trips] {len(rows)} matching trip(s) for {routes_shown}{class_note} with live prices in EGP "
         "ARE available and are shown to the user as a table directly below your reply "
         "(date, time, class, seats, price). Answer affirmatively with ONE short friendly "
@@ -415,7 +565,8 @@ def _fetch_trip_blocks(
         "or build a table yourself. NEVER say you can't provide prices/schedules, don't "
         "have the data, or tell them to check the app or website for prices — the table "
         "already shows every price."
-    ]
+    )
+    return blocks
 
 
 def _merge_context_parts(*groups: list[str], limit: int = 10) -> str:
@@ -596,6 +747,23 @@ def _fetch_station_blocks(
     ]
 
 
+# GoBus station names grouped by route destination (from the official station list).
+# Used when a user clicks a destination chip to show all offices in that area.
+DESTINATION_STATION_GROUPS: dict[str, list[str]] = {
+    "الإسكندرية": ["سيدي جابر _ سموحة", "محرم بك", "ميامى", "الرويسات"],
+    "الغردقة": ["الغردقة", "السقالة", "مكتب الأحياء", "سفاجا", "قرية الجونة", "سوما باي", "سهل حشيش", "القصير", "رأس سدر", "قرية تافيرا"],
+    "شرم الشيخ": ["جوباص شرم", "الوطنية", "عرب سات - نبق"],
+    "العين السخنة": ["بورتو السخنة", "جراند اوشن", "بورتو ساوث بيتش", "كانكون", "ديارا  كامب ( ماونتن فيو 1 )"],
+    "بورسعيد": ["بورسعيد وسط البلد", "ميناء بورسعيد"],
+    "دهب": ["دهب"],
+    "مرسى علم": ["مرسى علم"],
+    "مكادى": ["مكادى", "موسي كوست", "مطارما باي", "لاهاسيندا"],
+    "نويبع": ["نويبع", "طابا هايتس"],
+    "الساحل الشمالى": ["مراسى (الساحل الشمالى)", "مارينا 5", "مارينا 7", "مرسى مطروح", "الضبعة"],
+    "الأقصر": ["الأقصر"],
+}
+
+
 _DESTINATION_LIST_CUES = {
     normalize_arabic(c)
     for c in (
@@ -604,6 +772,76 @@ _DESTINATION_LIST_CUES = {
         "تخدم", "بتروح", "بتروحوا", "تروحوا", "وين", "فين",
     )
 }
+
+
+def _resolve_route_destination(city: str) -> str | None:
+    """Map a user-facing destination label to a canonical route destination."""
+    norm_city = normalize_arabic(city.strip())
+    if not norm_city:
+        return None
+    for dest in {r.destination for r in active_routes() if r.destination}:
+        norm_dest = normalize_arabic(dest)
+        if norm_dest == norm_city or norm_city in norm_dest or norm_dest in norm_city:
+            return dest
+    return None
+
+
+def _station_card(station: Station) -> dict[str, str]:
+    return {
+        "name": station.name,
+        "address": _clean_station_address(station.description),
+        "working_hours": station.working_hours or "",
+        "map_url": station.map_url or "",
+    }
+
+
+def stations_for_destination(city: str) -> list[dict[str, str]]:
+    """All active GoBus stations for a route destination (used by destination chips)."""
+    canonical = _resolve_route_destination(city)
+    if not canonical:
+        return []
+
+    by_name = {s.name: s for s in active_stations()}
+    matched: list[Station] = []
+    seen_ids: set[int] = set()
+
+    def _add(station: Station | None) -> None:
+        if station and station.id not in seen_ids:
+            seen_ids.add(station.id)
+            matched.append(station)
+
+    for name in DESTINATION_STATION_GROUPS.get(canonical, []):
+        _add(by_name.get(name))
+
+    mapped = CITY_STATION_NAMES.get(canonical)
+    if mapped:
+        _add(by_name.get(mapped))
+
+    norm_city = normalize_arabic(canonical)
+    for area, origin in NEAREST_ORIGIN_REGION.items():
+        if origin == canonical:
+            norm_area = normalize_arabic(area)
+            for station in active_stations():
+                norm_name = normalize_arabic(station.name)
+                if _term_matches(norm_area, norm_name):
+                    _add(station)
+
+    for station in active_stations():
+        norm_name = normalize_arabic(station.name)
+        if _term_matches(norm_city, norm_name):
+            _add(station)
+
+    ours = set(DESTINATION_STATION_GROUPS.get(canonical, []))
+    others = {
+        name
+        for dest, names in DESTINATION_STATION_GROUPS.items()
+        if dest != canonical
+        for name in names
+    }
+    matched = [s for s in matched if s.name in ours or s.name not in others]
+
+    matched.sort(key=lambda s: s.name)
+    return [_station_card(s) for s in matched]
 
 
 def _wants_destination_list(query: str) -> bool:
@@ -732,7 +970,12 @@ def retrieve_context(
         intents -= {"trips", "stations", "destinations"}
 
     # Follow-up trip question with route from conversation history.
-    if u.use_history_for_route and "trips" not in intents and history_text:
+    if (
+        u.use_history_for_route
+        and "trips" not in intents
+        and history_text
+        and not is_smalltalk(q)
+    ):
         fb_both, fb_single = _match_routes(db, history_text, _expand_search_terms(history_text, db))
         if fb_both or fb_single:
             intents.add("trips")
@@ -771,6 +1014,11 @@ def retrieve_context(
             if debug and debug.get("trips"):
                 live_trips = True
         elif content_type == "stations":
+            # The trips path may have already recommended a boarding station (when the
+            # customer's origin isn't served); don't overwrite it with name matches.
+            if debug is not None and debug.get("boarding"):
+                live_stations = True
+                continue
             station_blocks = _fetch_station_blocks(db, primary_query, search_terms, debug=debug)
             groups.append(station_blocks)
             if debug and debug.get("stations"):

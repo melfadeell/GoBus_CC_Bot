@@ -96,41 +96,41 @@ export default function TicketsList() {
       ) : items.length === 0 ? (
         <EmptyState message={crm.empty} />
       ) : (
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-[var(--color-surface-muted)] text-[var(--color-text-muted)]">
+        <div className="card table-wrap">
+          <table className="data-table text-sm">
+            <thead>
               <tr>
-                <th className="text-start p-3">{crm.ref}</th>
-                <th className="text-start p-3">{crm.subject}</th>
-                <th className="text-start p-3">{crm.category}</th>
-                <th className="text-start p-3">{crm.customer}</th>
-                <th className="text-start p-3">{crm.status}</th>
-                <th className="text-start p-3">{crm.priority}</th>
-                <th className="text-start p-3">{crm.channel}</th>
-                <th className="text-start p-3">{crm.created}</th>
+                <th>{crm.ref}</th>
+                <th>{crm.subject}</th>
+                <th>{crm.category}</th>
+                <th>{crm.customer}</th>
+                <th>{crm.status}</th>
+                <th>{crm.priority}</th>
+                <th>{crm.channel}</th>
+                <th>{crm.created}</th>
               </tr>
             </thead>
             <tbody>
               {items.map((row) => (
                 <tr
                   key={row.id}
-                  className="border-t border-[var(--color-border-default)] hover:bg-[var(--color-surface-muted)] cursor-pointer"
+                  className="cursor-pointer"
                   onClick={() => navigate(`/admin/tickets/${row.id}`)}
                 >
-                  <td className="p-3 font-mono text-xs whitespace-nowrap">{row.ref_number}</td>
-                  <td className="p-3 max-w-[18rem] truncate">{row.subject}</td>
-                  <td className="p-3 whitespace-nowrap text-xs">{categoryLabel(row.category)}</td>
-                  <td className="p-3 whitespace-nowrap">
+                  <td className="font-mono text-xs whitespace-nowrap">{row.ref_number}</td>
+                  <td className="max-w-[18rem] truncate">{row.subject}</td>
+                  <td className="whitespace-nowrap text-xs">{categoryLabel(row.category)}</td>
+                  <td className="whitespace-nowrap">
                     {row.customer_id ? `#${row.customer_id}` : row.guest_name || row.guest_email || crm.guest}
                   </td>
-                  <td className="p-3">
+                  <td>
                     <span className={`ticket-status ticket-status-${row.status}`}>{statusLabel(row.status)}</span>
                   </td>
-                  <td className="p-3">
+                  <td>
                     <span className={`ticket-prio ticket-prio-${row.priority}`}>{priorityLabel(row.priority)}</span>
                   </td>
-                  <td className="p-3 whitespace-nowrap">{channelLabel(row.channel)}</td>
-                  <td className="p-3 whitespace-nowrap text-xs text-[var(--color-text-muted)]">
+                  <td className="whitespace-nowrap">{channelLabel(row.channel)}</td>
+                  <td className="whitespace-nowrap text-xs text-[var(--color-text-muted)]">
                     {new Date(row.created_at).toLocaleString(locale === 'ar' ? 'ar-EG' : 'en-GB')}
                   </td>
                 </tr>

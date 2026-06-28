@@ -15,6 +15,7 @@ from openai import OpenAIError
 
 from app.config import get_settings
 from app.services.openai_client import get_openai_client
+from app.utils.text_utils import normalize_arabic
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -59,9 +60,12 @@ Rules:
 - "Difference between standard and elite" / bus classes → faq + services, wants_service_info true, wants_live_trips false. Do NOT include trips.
 - Bus ticket / "تذكرة حجز" for HOW to book → faq, NOT ticket_intent raise.
 - "I want to book a trip to Alexandria" / "حجز رحلة" / giving origin ("I'm from Cairo") during booking → trips or faq, wants_live_trips when route/schedules matter, ticket_intent MUST be null — never raise.
+- "I need/want to go to <city>" / "I'm going to <city> from <city>" / "عايز اروح <city>" / "3ayz aro7 <city>" → trips, wants_live_trips true (show live trips for that route). ticket_intent null.
 - Trip to city X → trips when asking schedule/price, NOT stations (destination is a route endpoint).
 - Bare station/area name or "where is X station" → stations.
+- "Where do I board?" / "boarding point" / "أركب منين" / "arkab mnen": when a destination/route is named → trips, wants_live_trips true (the backend recommends the nearest boarding station + shows trips from there). With NO destination → stations only. Keep origin + destination in search_query.
 - During complaint flow (continue_complaint_flow or ticket_intent raise): do NOT include trips/stations/destinations unless the message is clearly a new unrelated travel question.
+- Pure greetings/thanks/ack only (hi, hello, thanks, ok with no travel ask) → faq only, wants_live_trips false, use_history_for_route false — never re-fetch prior trip routes.
 - Use conversation context to resolve follow-ups and complaint continuations.
 - Output JSON only, no prose."""
 
@@ -74,8 +78,9 @@ bus_class: null|standard|elite|business; use_history_for_route: bool;
 wants_live_trips: bool (false for how-to-book); wants_service_info: bool;
 booking_related: bool; search_query: Arabic-normalized place/route text.
 Rules: how-to-book→faq only, no trips; trip prices/schedules→trips; class compare→faq+services;
-trip to city→trips not stations; want-to-book-trip / origin follow-up→trips, ticket_intent null;
-complaint flow→no structured cards unless new travel Q."""
+trip to city→trips not stations; where-do-i-board/arkab mnen/أركب منين with a destination→trips (nearest boarding station shown), without destination→stations;
+want-to-book-trip / "need/want to go to X" / "going to X from Y" / origin follow-up→trips wants_live_trips true, ticket_intent null;
+complaint flow→no structured cards unless new travel Q; pure hi/hello/thanks→faq only, no history trips."""
 
 
 @dataclass
@@ -165,6 +170,22 @@ def _is_bus_booking_intent(message: str) -> bool:
     )
 
 
+_TRAVEL_INTENT_RE = re.compile(
+    r"\b(?:want|wanna|need|would\s+like|i'?d\s+like|trying|plan(?:ning)?|looking)\s+to\s+"
+    r"(?:go|travel|head|get)\b"
+    r"|\b(?:go|going|travel|travell?ing|head|heading)\s+to\b"
+    r"|عايز\s*(?:ا|أ)?روح|عاوز\s*(?:ا|أ)?روح|نفسي\s*(?:ا|أ)?روح|محتاج\s*(?:ا|أ)?روح|رايح|هروح|اروح"
+    r"|3a?yz\s*aroo?7|3a?wz\s*aroo?7|\baroo?7\b|\bro7\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_travel_request(message: str) -> bool:
+    """\"I need to go to X\" / \"عايز اروح X\" / \"3ayz aro7 X\" — a travel ask that should
+    surface live trips when a route/city is named, even without 'trip/price' keywords."""
+    return bool(_TRAVEL_INTENT_RE.search((message or "").strip()))
+
+
 def _is_origin_followup(message: str) -> bool:
     """Short reply giving departure city after the bot asked where they travel from."""
     text = (message or "").strip()
@@ -221,6 +242,66 @@ def _is_service_compare(message: str) -> bool:
     )
 
 
+_SMALLTALK_RE = re.compile(
+    r"^(?:"
+    r"hi(?:\s+there|\s+again)?|"
+    r"hello(?:\s+there|\s+again)?|"
+    r"hey(?:\s+there)?|"
+    r"hiya|howdy|yo|sup|"
+    r"good\s+(?:morning|afternoon|evening|night)|"
+    r"thanks?(?:\s+you)?|thank\s+you|thx|ty|"
+    r"ok(?:ay)?|k|cool|great|nice|perfect|awesome|"
+    r"bye|goodbye|see\s+ya|"
+    r"مرحبا?|أ?هلا+|السلام\s+عليكم|"
+    r"شكرا?|متشكر|"
+    r"تمام|اوك|طيب"
+    r")[\s!.?,]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_COMPLAINT_DETAIL_PROMPTS = (
+    "describe what happened",
+    "what happened",
+    "describe the problem",
+    "وصف المشكلة",
+    "ما الذي حدث",
+)
+
+
+def _assistant_awaiting_complaint_detail(history: list[dict] | None) -> bool:
+    """True when the bot just asked the customer to describe their complaint."""
+    if not history:
+        return False
+    for turn in reversed(history[-4:]):
+        if turn.get("role") != "assistant":
+            continue
+        prev = turn.get("content") or ""
+        if _assistant_asked_travel_detail(prev):
+            return False
+        prev_lower = prev.lower()
+        return any(p in prev_lower for p in _COMPLAINT_DETAIL_PROMPTS)
+    return False
+
+
+def is_smalltalk(message: str, *, history: list[dict] | None = None) -> bool:
+    """True when the turn is only a greeting/thanks/ack — no travel or ticket intent."""
+    msg = (message or "").strip()
+    if not msg or len(msg) > 80:
+        return False
+    if _assistant_awaiting_complaint_detail(history):
+        return False
+    return bool(_SMALLTALK_RE.match(msg))
+
+
+def _smalltalk_understanding(message: str) -> ChatUnderstanding:
+    return ChatUnderstanding(
+        content_intents={"faq"},
+        search_query=(message or "").strip(),
+        wants_live_trips=False,
+        use_history_for_route=False,
+    )
+
+
 def _is_station_query(message: str) -> bool:
     lower = (message or "").lower()
     return bool(
@@ -230,6 +311,52 @@ def _is_station_query(message: str) -> bool:
             lower + (message or ""),
         )
     )
+
+
+_DESTINATION_LIST_CUES = {
+    normalize_arabic(c)
+    for c in (
+        "destinations", "which destinations", "what destinations", "serve", "serves",
+        "cities", "places", "routes", "وجهات", "الوجهات", "اماكن", "الاماكن", "مدن",
+        "تخدم", "بتروح", "بتروحوا", "تروحوا", "وين", "فين",
+    )
+}
+
+
+def _is_destination_list_query(message: str) -> bool:
+    nq = normalize_arabic(message or "")
+    return any(c and c in nq for c in _DESTINATION_LIST_CUES)
+
+
+def _heuristic_understanding(message: str) -> ChatUnderstanding:
+    """Keyword routing when the understanding LLM is unavailable."""
+    text = (message or "").strip()
+    u = ChatUnderstanding(content_intents={"faq"}, search_query=text)
+    if _is_destination_list_query(text):
+        u.content_intents = {"destinations"}
+    elif _is_station_query(text) and not _is_trip_schedule_query(text):
+        u.content_intents = {"stations"}
+    elif (_is_trip_schedule_query(text) or _is_travel_request(text)) and _mentions_route(text):
+        u.content_intents = {"trips"}
+        u.wants_live_trips = True
+    return u
+
+
+_BOARDING_RE = re.compile(
+    r"where\s+(?:do|can|should|to)\s+(?:i\s+)?board"
+    r"|boarding\s+(?:point|station|place|location|spot)"
+    r"|pick[\s-]?up\s+(?:point|location|station)"
+    r"|\barkab\s+(?:mn|men|mnen|mnein|mneen|min|from)"
+    r"|أركب\s*م?نين|اركب\s*م?نين|أركب\s*من\s*فين|اركب\s*من\s*فين"
+    r"|أركب\s*فين|اركب\s*فين|نقطة\s*(?:الركوب|الانطلاق|الإنطلاق)|محطة\s*الركوب",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_boarding_question(message: str) -> bool:
+    """\"Where do I board?\" / \"arkab mnen\" — the customer wants the boarding STATION,
+    not a trips table. Mentioning a destination must not reroute this to trips."""
+    return bool(_BOARDING_RE.search((message or "").strip()))
 
 
 def _clear_ticket_if_travel_booking(u: ChatUnderstanding, message: str) -> None:
@@ -270,6 +397,18 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
         u.ticket_intent = "check"
         u.content_intents = {"faq"}
         u.wants_live_trips = False
+        return u, True
+
+    # Complaint continuation takes priority: when the assistant just asked the
+    # customer to describe their problem, THIS turn is the answer — even if it
+    # mentions "book a ticket" (past-tense complaint about an existing booking).
+    # Must run before the booking/trip heuristics so a complaint reply like
+    # "I did book a ticket but it isn't shown" never triggers a trips table.
+    if _assistant_awaiting_complaint_detail(history):
+        u.continue_complaint_flow = True
+        u.ticket_intent = "raise"
+        u.wants_live_trips = False
+        u.content_intents = {"faq"}
         return u, True
 
     if _is_booking_howto(msg):
@@ -314,12 +453,32 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
         u.content_intents = {"faq"}
         return u, True
 
+    # "Where do I board?" / "arkab mnen". When a destination/route is named, the
+    # customer wants the boarding point AND the trips from there — the trips path
+    # recommends the nearest GoBus origin station when their city isn't served.
+    # A bare boarding question (no route) just resolves the boarding station.
+    if _is_boarding_question(msg):
+        if _mentions_route(msg):
+            u.wants_live_trips = True
+            u.content_intents = {"trips"}
+        else:
+            u.wants_live_trips = False
+            u.content_intents = {"stations"}
+        return u, True
+
     if _is_station_query(msg) and not _is_trip_schedule_query(msg):
         u.wants_live_trips = False
         u.content_intents = {"stations"}
         return u, True
 
-    if _is_trip_schedule_query(msg) and (_mentions_route(msg) or u.bus_class):
+    if _is_destination_list_query(msg):
+        u.wants_live_trips = False
+        u.content_intents = {"destinations"}
+        return u, True
+
+    if (_is_trip_schedule_query(msg) or _is_travel_request(msg)) and (
+        _mentions_route(msg) or u.bus_class
+    ):
         u.wants_live_trips = True
         u.content_intents = {"trips"}
         if re.search(r"cheapest|أرخص|ارخص|lowest", lower + msg):
@@ -340,31 +499,8 @@ def fast_understanding(message: str, *, history: list[dict] | None = None) -> tu
             u.use_history_for_route = True
         return u, True
 
-    # Complaint follow-up: assistant just asked for complaint details (not travel/booking).
-    if history:
-        for turn in reversed(history[-4:]):
-            if turn.get("role") != "assistant":
-                continue
-            prev = turn.get("content") or ""
-            if _assistant_asked_travel_detail(prev):
-                break
-            prev_lower = prev.lower()
-            if any(
-                p in prev_lower
-                for p in (
-                    "describe what happened",
-                    "what happened",
-                    "describe the problem",
-                    "وصف المشكلة",
-                    "ما الذي حدث",
-                )
-            ):
-                u.continue_complaint_flow = True
-                u.ticket_intent = "raise"
-                u.wants_live_trips = False
-                u.content_intents = {"faq"}
-                return u, True
-            break
+    if is_smalltalk(msg, history=history):
+        return _smalltalk_understanding(msg), True
 
     _apply_intent_coercion(u, msg)
     return u, False
@@ -387,14 +523,10 @@ def understanding_affects_retrieval(a: ChatUnderstanding, b: ChatUnderstanding) 
 
 
 def _fallback(message: str) -> ChatUnderstanding:
-    text = (message or "").strip()
-    return ChatUnderstanding(
-        content_intents={"faq"},
-        search_query=text,
-    )
+    return _heuristic_understanding(message)
 
 
-def _coerce(raw: dict, message: str) -> ChatUnderstanding:
+def _coerce(raw: dict, message: str, *, history: list[dict] | None = None) -> ChatUnderstanding:
     fb = _fallback(message)
     ticket = raw.get("ticket_intent")
     if ticket not in VALID_TICKET_INTENTS:
@@ -420,7 +552,12 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
     if not wants_live_trips:
         intents.discard("trips")
 
-    if ticket == "raise" or bool(raw.get("continue_complaint_flow")):
+    # Bus-booking intent normally cancels a complaint flow — but NOT when the
+    # assistant just asked for complaint details: a reply like "I did book a
+    # ticket but it isn't shown" is a complaint answer, not a booking request.
+    if (ticket == "raise" or bool(raw.get("continue_complaint_flow"))) and not (
+        _assistant_awaiting_complaint_detail(history)
+    ):
         if wants_live_trips or _is_bus_booking_intent(message) or _is_origin_followup(message):
             ticket = None
             raw["continue_complaint_flow"] = False
@@ -446,7 +583,7 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
     if bus_class not in VALID_BUS_CLASSES:
         bus_class = _extract_bus_class(message)
 
-    return ChatUnderstanding(
+    u = ChatUnderstanding(
         ticket_intent=ticket,
         continue_complaint_flow=bool(raw.get("continue_complaint_flow")),
         content_intents=intents,
@@ -459,6 +596,13 @@ def _coerce(raw: dict, message: str) -> ChatUnderstanding:
         bus_class=bus_class,
         search_query=search_query[:200],
     )
+    if is_smalltalk(message, history=history):
+        u.wants_live_trips = False
+        u.use_history_for_route = False
+        u.content_intents = {"faq"}
+        u.ticket_intent = None
+        u.continue_complaint_flow = False
+    return u
 
 
 async def understand_message(
@@ -470,6 +614,8 @@ async def understand_message(
     msg = (message or "").strip()
     if not msg:
         return _fallback(msg)
+    if is_smalltalk(msg, history=history):
+        return _smalltalk_understanding(msg)
     if not settings.openai_api_key or not settings.chat_understanding_enabled:
         return _fallback(msg)
 
@@ -499,7 +645,7 @@ async def understand_message(
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content or "{}")
-        return _coerce(raw, msg)
+        return _coerce(raw, msg, history=history)
     except (OpenAIError, json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.warning("Chat understanding failed (%s); using safe fallback", exc)
         return _fallback(msg)
