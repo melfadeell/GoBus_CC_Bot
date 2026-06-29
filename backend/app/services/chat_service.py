@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+import json
 import re
 import time
 
@@ -18,17 +19,11 @@ from app.core.constants import (
 )
 from app.core.guardrails import HARD_GUARDRAILS
 from app.core.logging import metrics_logger
-from app.models.models import BotSettings, ChatMessage, ChatSession, Ticket
-from app.services.chat_understanding import (
-    ChatUnderstanding,
-    fast_understanding,
-    understand_message,
-    understanding_affects_retrieval,
-)
-from app.services.kb_retrieval import _HISTORY_SEP, retrieve_context
+from app.models.models import BotSettings, ChatMessage, ChatSession
+from app.services.chat_understanding import is_smalltalk
+from app.services.chat_tools import TOOLS, run_tool
+from app.services.kb_retrieval import _HISTORY_SEP
 from app.services.logs_writer import log_chat_turn, log_error, log_llm_call
-from app.services.query_understanding import correct_query
-from app.services.ticketing_agent import build_ticket_draft
 
 settings = get_settings()
 
@@ -115,29 +110,6 @@ def get_conversation_history(
     return [{"role": m.role, "content": m.content} for m in combined if m.content.strip()]
 
 
-def fetch_ticket_summaries(db: Session, customer_id: int, limit: int = 10) -> list[dict]:
-    """Compact ticket rows for the chat follow-up cards (plain dicts so nothing
-    detached is accessed from the async context)."""
-    rows = (
-        db.query(Ticket)
-        .filter(Ticket.customer_id == customer_id)
-        .order_by(Ticket.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {
-            "ref_number": t.ref_number,
-            "subject": t.subject,
-            "category": t.category,
-            "status": t.status,
-            "priority": t.priority,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-        }
-        for t in rows
-    ]
-
-
 def _reply_language_directive(message: str) -> str:
     """Per-message language instruction — far more reliable than a general rule."""
     if re.search(r"[؀-ۿ]", message or ""):
@@ -177,126 +149,45 @@ def _dangling_completion(message: str, hotline: str) -> str:
     )
 
 
-def _structured_intro_fallback(structured_mode: str | None, message: str) -> str:
-    """One-line intro when structured UI is shown but the main LLM call failed."""
-    ar = bool(re.search(r"[؀-ۿ]", message or ""))
-    if structured_mode == "destinations_shown":
-        return "الوجهات متاحة أدناه." if ar else "GoBus destinations are shown below."
-    if structured_mode == "stations_shown":
-        return "تفاصيل المحطات متاحة أدناه." if ar else "Station details are shown below."
-    if structured_mode in ("trips_shown", "boarding_with_trips"):
-        return "نتائج الرحلات متاحة أدناه." if ar else "Trip results are shown below."
-    return _dangling_completion(message, DEFAULT_HOTLINE)
+def _structured_fallback_text(message: str) -> str:
+    """One-line intro when structured cards/tables were already shown but the final
+    LLM answer call failed."""
+    if re.search(r"[؀-ۿ]", message or ""):
+        return "النتائج متاحة أدناه."
+    return "The results are shown below."
 
 
-_TICKET_DIRECTIVES = {
-    "raise_collect": (
-        "\n--- Support ticket (mandatory) ---\n"
-        "The customer wants to raise a complaint/ticket but has NOT yet described what "
-        "actually happened. Do NOT create a ticket and do NOT show any form. Reply with "
-        "ONE short, friendly question asking them to describe the problem (what happened, "
-        "when, which trip/route if relevant) so you can open the ticket for them.\n"
-    ),
-    "raise": (
-        "\n--- Support ticket (mandatory) ---\n"
-        "The customer described their issue. The app is showing them a ticket form "
-        "(pre-filled) to review and confirm — do NOT ask for the details again and "
-        "do NOT claim a ticket was created. Reply with ONE short line telling them to review "
-        "and confirm the ticket details shown below.\n"
-    ),
-    "check": (
-        "\n--- Support ticket (mandatory) ---\n"
-        "The customer is following up on their tickets. The app is showing their tickets as "
-        "cards below. Reply with ONE short line (e.g. 'Here are your tickets:'); do NOT list "
-        "or invent ticket details yourself.\n"
-    ),
-    "login_required": (
-        "\n--- Support ticket (mandatory) ---\n"
-        "The customer asked about their tickets but is not logged in. Politely ask them to log "
-        "in (or create an account) to view their tickets. Keep it to one or two short lines.\n"
-    ),
-}
-
-_STRUCTURED_DIRECTIVES = {
-    "boarding_with_trips": (
-        "\n--- Nearest boarding point + trips (mandatory) ---\n"
-        "The customer named a departure city GoBus does NOT serve. A station card for the "
-        "NEAREST boarding city AND a trips table from there are shown directly below your "
-        "reply. Use the [Boarding] context block for the exact city/station names.\n"
-        "Reply in TWO short lines: (1) GoBus doesn't depart from the city they named — the "
-        "nearest boarding point is the city/station in the card; (2) a one-line intro to the "
-        "trips (e.g. \"وإليك الرحلات المتاحة من هناك:\" / \"Here are the trips from there:\").\n"
-        "FORBIDDEN: listing trips yourself, repeating the address, or claiming you lack "
-        "data — the card and table are the answer.\n"
-    ),
-    "trips_shown": (
-        "\n--- Live trip results (mandatory) ---\n"
-        "The app is ALREADY showing the customer a trips table with dates, times, class, "
-        "seats, and prices in EGP directly below your reply. The data exists and is visible.\n"
-        "Reply with ONLY one short intro line (e.g. \"Here are the trips from Cairo to "
-        "Hurghada:\" / \"إليك رحلات القاهرة–الغردقة:\").\n"
-        "FORBIDDEN: saying you cannot provide prices/schedules, telling them to check the "
-        "app or website for prices, or claiming you lack trip data. The table IS the answer.\n"
-    ),
-    "stations_shown": (
-        "\n--- Live station card (mandatory) ---\n"
-        "Station details (address, hours, map) are ALREADY shown as a card below your reply. "
-        "Reply with ONE short intro line only (e.g. \"Here are the station details:\"). "
-        "NEVER end mid-sentence with a dangling colon and no station name. "
-        "NEVER say you can't provide the address or to check the app — the card already shows it.\n"
-    ),
-    "destinations_shown": (
-        "\n--- Live destinations list (mandatory) ---\n"
-        "Destination chips are ALREADY shown below your reply. Reply with ONE short intro "
-        "line only. Do NOT list destinations yourself.\n"
-    ),
-    "kb_from_context": (
-        "\n--- KB answer (mandatory) ---\n"
-        "The GoBus knowledge-base context below contains the official answer to this question. "
-        "Answer from that context using Markdown bullets/headers. Do NOT say you lack specific "
-        "details, and do NOT give only generic advice when [FAQ] or [Services] blocks already "
-        "answer the question. Do NOT show or mention a trips table — this is not a schedule query.\n"
-    ),
-}
-
-
-def _build_system_prompt(
-    system_prompt: str,
-    context: str,
-    message: str = "",
-    ticket_mode: str | None = None,
-    structured_mode: str | None = None,
-    hotline: str = DEFAULT_HOTLINE,
-) -> str:
+def _build_system_prompt(system_prompt: str, hotline: str, message: str = "") -> str:
     formatting = """
 --- Response format (mandatory) ---
 Use Markdown: ## headers for sections, - bullets for lists. No wall-of-text paragraphs.
 Short paragraphs only.
-
---- Structured results (mandatory) ---
-Trips, stations, and the destinations list are rendered to the user automatically as
-tables/cards/chips by the app ONLY when matching data was found. When the KB context says
-these are "shown to the user", reply with ONLY a short one-line intro and do NOT repeat,
-list, or re-format that data yourself. When [Stations] says no station matched, give a
-complete answer — never an incomplete intro ending with ":" and nothing after it.
-Never invent trips/stations/prices, and never claim you lack data when the context says
-results are shown.
 """
-    ticket_directive = _TICKET_DIRECTIVES.get(ticket_mode or "", "")
-    structured_directive = _STRUCTURED_DIRECTIVES.get(structured_mode or "", "")
-    kb_context = (
-        context
-        if context
-        else "No GoBus-specific KB matches for this query. General questions may still be answered helpfully."
-    )
+    tool_rules = """
+--- Tools (mandatory) ---
+You cannot see the GoBus database directly. To answer ANYTHING about trips, schedules,
+prices, seats, stations, addresses, destinations served, bus classes/services, booking,
+policies, or support tickets, you MUST call the matching tool and use its result. NEVER
+invent or guess trips, prices, schedules, seat counts, addresses, or ticket details, and
+never tell the customer to check the app/website for data a tool can provide.
+When you call a tool, do NOT write any text in that same turn — reply only after the tool
+result returns. After a tool says it has shown the user a table/card/chips (trips, station,
+destinations list, ticket form, or ticket list), reply with ONE short intro line and do NOT
+repeat or re-list that data yourself. If a tool reports no match, say so plainly and offer
+the hotline {{HOTLINE}} or the GoBus app.
+"""
+    voice_rules = """
+--- Internal terms (mandatory) ---
+NEVER reveal or mention your internal systems or data sources to the customer. Do NOT use
+words like "KB", "knowledge base", "database", "context", "tool", "section", "block", or
+"records" in your reply. When information is unavailable, say it naturally as GoBus —
+e.g. "I don't have more details on that right now" — never "the KB doesn't list it" or
+"that's not in my context".
+"""
     assembled = f"""{HARD_GUARDRAILS}
 
 {system_prompt}
-{formatting}{ticket_directive}{structured_directive}
-{_reply_language_directive(message)}
---- سياق قاعدة المعرفة (GoBus) ---
-{kb_context}
-"""
+{formatting}{tool_rules}{voice_rules}{_reply_language_directive(message)}"""
     # Single-source hotline: the prompt/guardrails carry a {{HOTLINE}} placeholder
     # that we fill from the editable BotSettings.hotline at runtime.
     return assembled.replace("{{HOTLINE}}", hotline)
@@ -368,111 +259,17 @@ def _fire(fn: Callable, **kwargs) -> None:
         fn(**kwargs)
 
 
-def _retrieve(
-    db: Session,
-    raw_query: str,
-    understanding: ChatUnderstanding,
-    *,
-    history_text: str,
-    retrieval_debug: dict,
-    skip_structured: bool,
-) -> str:
-    corrected = understanding.search_query
-    extra = corrected if corrected.strip() != raw_query.strip() else None
-    return retrieve_context(
-        db,
-        raw_query,
-        10,
-        debug=retrieval_debug,
-        history_text=history_text,
-        extra_query=extra,
-        skip_structured=skip_structured,
-        understanding=understanding,
-    )
+def _create_kwargs(model_name: str, messages: list[dict], **extra) -> dict:
+    """Shared OpenAI request kwargs with the temperature guard for reasoning models."""
+    kwargs: dict = {"model": model_name, "messages": messages, **extra}
+    # GPT-5 / reasoning models only accept the default temperature; sending a custom
+    # value returns a 400. Other models keep the tuned low temperature.
+    if not model_name.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+        kwargs["temperature"] = 0.3
+    return kwargs
 
 
-async def _resolve_understanding_and_context(
-    db: Session,
-    raw_query: str,
-    history: list[dict],
-    history_text: str,
-    retrieval_debug: dict,
-) -> tuple[ChatUnderstanding, str, bool]:
-    """Return (understanding, kb_context, skip_structured)."""
-    fast_u, confident = fast_understanding(raw_query, history=history)
-
-    if confident and settings.chat_understanding_fast_path:
-        understanding = fast_u
-        skip_structured = understanding.in_complaint_flow
-        # English station queries skip the understanding LLM — normalize place names
-        # so Arabic DB matching works (e.g. "Fifth Settlement" → "التجمع الخامس").
-        if "stations" in understanding.content_intents and re.search(r"[A-Za-z]", raw_query):
-            corrected = await correct_query(raw_query, history_text=history_text)
-            if corrected.strip():
-                understanding.search_query = corrected.strip()
-        context = await asyncio.to_thread(
-            _retrieve,
-            db,
-            raw_query,
-            understanding,
-            history_text=history_text,
-            retrieval_debug=retrieval_debug,
-            skip_structured=skip_structured,
-        )
-        return understanding, context, skip_structured
-
-    if (
-        settings.chat_understanding_enabled
-        and settings.chat_speculative_retrieval
-        and settings.openai_api_key
-    ):
-        spec_debug: dict = {}
-        understand_task = asyncio.create_task(understand_message(raw_query, history=history))
-        retrieve_task = asyncio.create_task(
-            asyncio.to_thread(
-                _retrieve,
-                db,
-                raw_query,
-                fast_u,
-                history_text=history_text,
-                retrieval_debug=spec_debug,
-                skip_structured=fast_u.in_complaint_flow,
-            )
-        )
-        understanding = await understand_task
-        skip_structured = understanding.in_complaint_flow
-        if understanding_affects_retrieval(fast_u, understanding):
-            retrieval_debug.clear()
-            context = await asyncio.to_thread(
-                _retrieve,
-                db,
-                raw_query,
-                understanding,
-                history_text=history_text,
-                retrieval_debug=retrieval_debug,
-                skip_structured=skip_structured,
-            )
-        else:
-            context = await retrieve_task
-            retrieval_debug.update(spec_debug)
-        return understanding, context, skip_structured
-
-    if settings.chat_understanding_enabled and settings.openai_api_key:
-        understanding = await understand_message(raw_query, history=history)
-    else:
-        understanding = fast_u
-
-    skip_structured = understanding.in_complaint_flow
-    context = await asyncio.to_thread(
-        _retrieve,
-        db,
-        raw_query,
-        understanding,
-        history_text=history_text,
-        retrieval_debug=retrieval_debug,
-        skip_structured=skip_structured,
-    )
-    return understanding, context, skip_structured
+_STRUCTURED_META_KEYS = ("trips", "stations", "destinations", "draft", "tickets_crm")
 
 
 async def stream_chat_response(
@@ -513,169 +310,135 @@ async def stream_chat_response(
     )
     raw_query = user_message or (ocr_text or "")
 
-    retrieval_debug: dict = {}
-    understanding, context, skip_structured = await _resolve_understanding_and_context(
-        db, raw_query, history, history_text, retrieval_debug
-    )
-
-    ticket_mode: str | None = None
-    ticket_meta: dict | None = None
-    has_content_result = bool(
-        retrieval_debug.get("trips")
-        or retrieval_debug.get("stations")
-        or retrieval_debug.get("destinations")
-    )
-    has_trip_results = bool(retrieval_debug.get("trips"))
-    in_raise_flow = (
-        not has_trip_results
-        and understanding.ticket_intent == "raise"
-        and not understanding.wants_live_trips
-    ) or (
-        understanding.continue_complaint_flow and not has_content_result
-    )
-    if in_raise_flow:
-        draft = await build_ticket_draft(history, raw_query)
-        if draft.get("ready"):
-            # Enough detail — show the pre-filled confirm form.
-            ticket_mode = "raise"
-            ticket_meta = {
-                "type": "meta",
-                "action": "open_ticket_form",
-                "draft": draft,
-                "logged_in": customer_id is not None,
-                "channel": normalized_channel,
-            }
-        else:
-            # Not enough detail yet — the bot asks what the problem is first.
-            ticket_mode = "raise_collect"
-    elif understanding.ticket_intent == "check":
-        if customer_id is not None:
-            ticket_mode = "check"
-            tickets_list = await asyncio.to_thread(fetch_ticket_summaries, db, customer_id)
-            ticket_meta = {"type": "meta", "tickets_crm": tickets_list}
-        else:
-            ticket_mode = "login_required"
-            ticket_meta = {"type": "meta", "action": "login_required"}
-
-    structured_mode: str | None = None
-    if retrieval_debug.get("trips"):
-        structured_mode = (
-            "boarding_with_trips" if retrieval_debug.get("boarding") else "trips_shown"
-        )
-    elif retrieval_debug.get("stations"):
-        structured_mode = "stations_shown"
-    elif retrieval_debug.get("destinations"):
-        structured_mode = "destinations_shown"
-    elif understanding.wants_service_info or (
-        understanding.booking_related and not understanding.wants_live_trips
-    ):
-        structured_mode = "kb_from_context"
-
-    messages = [
-        {
-            "role": "system",
-            "content": _build_system_prompt(
-                system_prompt, context, raw_query, ticket_mode, structured_mode, hotline
-            ),
-        }
+    messages: list[dict] = [
+        {"role": "system", "content": _build_system_prompt(system_prompt, hotline, raw_query)}
     ]
     messages.extend(history)
-
-    if ticket_meta is not None:
-        yield ticket_meta
-
-    # Surface the trips SQL only when debug exposure is explicitly enabled
-    # (off in production — never leak internal SQL/schema to public chat users).
-    trips_sql = retrieval_debug.get("trips_sql")
-    if trips_sql and settings.expose_sql_debug:
-        yield {"type": "meta", "sql": trips_sql}
-
-    # Structured KB cards/tables: trips always surface when fetched (even if a
-    # ticket draft was also considered). Stations/destinations stay suppressed
-    # during ticket flows to avoid unrelated cards on complaints.
-    trips = retrieval_debug.get("trips")
-    if trips:
-        yield {"type": "meta", "trips": trips}
-
-    if ticket_mode is None:
-        stations = retrieval_debug.get("stations")
-        if stations:
-            yield {"type": "meta", "stations": stations}
-
-        destinations = retrieval_debug.get("destinations")
-        if destinations:
-            yield {"type": "meta", "destinations": destinations}
-
-    # Whether the app rendered any card/table/form below the reply. When nothing
-    # structured is shown, a reply ending on a dangling colon is genuinely broken
-    # (no card for the colon to point at) and must be completed before saving.
-    structured_shown = bool(
-        retrieval_debug.get("trips")
-        or ticket_meta is not None
-        or (
-            ticket_mode is None
-            and (retrieval_debug.get("stations") or retrieval_debug.get("destinations"))
-        )
-    )
 
     client = get_openai_client()
     full_response = ""
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens = 0
-    log_error_msg: str | None = None
+    ttft_sent = False
+    structured_shown = False
+    # Greetings/thanks/acks never need data — skip tool calling for a faster reply.
+    allow_tools_turn = not is_smalltalk(raw_query, history=history)
 
-    create_kwargs: dict = {
-        "model": model_name,
-        "messages": messages,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
-    # GPT-5 / reasoning models only accept the default temperature; sending a
-    # custom value returns a 400. Other models keep the tuned low temperature.
-    if not model_name.lower().startswith(("gpt-5", "o1", "o3", "o4")):
-        create_kwargs["temperature"] = 0.3
+    def _accumulate_usage(usage) -> None:
+        nonlocal prompt_tokens, completion_tokens, total_tokens
+        if usage:
+            prompt_tokens += usage.prompt_tokens or 0
+            completion_tokens += usage.completion_tokens or 0
+            total_tokens += usage.total_tokens or 0
 
     try:
-        stream = await client.chat.completions.create(**create_kwargs)
-
-        async for chunk in stream:
+        max_rounds = max(1, settings.chat_tool_max_rounds)
+        for round_idx in range(max_rounds + 1):
             if cancelled and cancelled():
                 await asyncio.to_thread(db.rollback)
                 return
 
-            if getattr(chunk, "usage", None):
-                prompt_tokens = chunk.usage.prompt_tokens or 0
-                completion_tokens = chunk.usage.completion_tokens or 0
-                total_tokens = chunk.usage.total_tokens or 0
+            # The final allowed round forbids tools so the model must produce text.
+            offer_tools = allow_tools_turn and round_idx < max_rounds
+            kwargs = _create_kwargs(
+                model_name,
+                messages,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            if offer_tools:
+                kwargs["tools"] = TOOLS
+                kwargs["tool_choice"] = "auto"
 
-            if not chunk.choices:
-                continue
-            delta = getattr(chunk.choices[0].delta, "content", None)
-            if delta:
-                if not full_response:
-                    # Report time-to-first-token (from request receipt) once.
-                    yield {
-                        "type": "meta",
-                        "ttft_ms": int((time.perf_counter() - started) * 1000),
+            stream = await client.chat.completions.create(**kwargs)
+
+            tool_calls: dict[int, dict] = {}
+            content_buf = ""
+            async for chunk in stream:
+                if cancelled and cancelled():
+                    await asyncio.to_thread(db.rollback)
+                    return
+                _accumulate_usage(getattr(chunk, "usage", None))
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                for tc in getattr(delta, "tool_calls", None) or []:
+                    slot = tool_calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                    if tc.id:
+                        slot["id"] = tc.id
+                    fn = getattr(tc, "function", None)
+                    if fn and fn.name:
+                        slot["name"] = fn.name
+                    if fn and fn.arguments:
+                        slot["args"] += fn.arguments
+                token = getattr(delta, "content", None)
+                if token:
+                    if not ttft_sent:
+                        ttft_sent = True
+                        yield {
+                            "type": "meta",
+                            "ttft_ms": int((time.perf_counter() - started) * 1000),
+                        }
+                    full_response += token
+                    yield {"type": "token", "content": token}
+
+            if not tool_calls:
+                # No tools requested — the streamed content is the final answer.
+                break
+
+            # Execute the requested tools, surface their cards/tables, and loop so the
+            # model can write its reply grounded in the results.
+            ordered = [tool_calls[i] for i in sorted(tool_calls)]
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": content_buf or None,
+                    "tool_calls": [
+                        {
+                            "id": t["id"] or f"call_{i}",
+                            "type": "function",
+                            "function": {"name": t["name"], "arguments": t["args"] or "{}"},
+                        }
+                        for i, t in enumerate(ordered)
+                    ],
+                }
+            )
+            for i, t in enumerate(ordered):
+                try:
+                    args = json.loads(t["args"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result_text, metas = await run_tool(
+                    t["name"],
+                    args,
+                    db=db,
+                    message=raw_query,
+                    history=history,
+                    history_text=history_text,
+                    customer_id=customer_id,
+                    channel=normalized_channel,
+                )
+                for meta in metas:
+                    if any(k in meta for k in _STRUCTURED_META_KEYS):
+                        structured_shown = True
+                    yield meta
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": t["id"] or f"call_{i}",
+                        "content": (result_text or "").replace("{{HOTLINE}}", hotline),
                     }
-                full_response += delta
-                yield {"type": "token", "content": delta}
+                )
 
     except OpenAIError as exc:
         if structured_shown:
-            fallback_text = _structured_intro_fallback(structured_mode, raw_query)
+            # Cards/tables already reached the user — give a complete one-line intro
+            # instead of failing the whole turn.
+            fallback_text = _structured_fallback_text(raw_query)
             full_response = fallback_text
             yield {"type": "token", "content": fallback_text}
-            await asyncio.to_thread(
-                _finalize_turn,
-                db,
-                session_id,
-                full_response,
-                0,
-                0,
-                0,
-            )
+            await asyncio.to_thread(_finalize_turn, db, session_id, full_response, 0, 0, 0)
             elapsed = time.perf_counter() - started
             _fire(
                 log_chat_turn,
@@ -745,8 +508,7 @@ async def stream_chat_response(
         return
 
     # Safety net: never leave the customer with an incomplete "...is:" reply when
-    # there's no card/table to follow it. Append a complete, language-matched line
-    # so the answer always reads as finished.
+    # there's no card/table to follow it.
     if not structured_shown and _is_dangling_reply(full_response):
         completion = " " + _dangling_completion(raw_query, hotline)
         full_response += completion
