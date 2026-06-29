@@ -22,10 +22,6 @@ from app.core.constants import (
     TICKET_CATEGORIES,
     TICKET_PRIORITIES,
 )
-from app.services.chat_understanding import (
-    _is_bus_booking_intent,
-    _is_origin_followup,
-)
 from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
@@ -78,11 +74,9 @@ def _coerce(raw: dict, last_user_message: str) -> dict:
     subject = (raw.get("subject") or "").strip()
     description = (raw.get("description") or "").strip()
     ready = bool(raw.get("ready", True))
-    if ready and (
-        _is_bus_booking_intent(last_user_message)
-        or _is_origin_followup(last_user_message)
-        or re.search(r"\bbook(ing)?\s+(a\s+)?trip\b", (subject + description).lower())
-    ):
+    # Safety net: a bus-trip booking is never a support ticket. The LLM decides when
+    # to start a ticket now, but guard against an obvious "book a trip" slipping through.
+    if ready and re.search(r"\bbook(ing)?\s+(a\s+)?trip\b", (subject + description).lower()):
         ready = False
     return {
         "ready": ready,

@@ -11,17 +11,8 @@ class Settings(BaseSettings):
     # Custom OpenAI-compatible endpoint base URL (blank = OpenAI default).
     openai_base_url: str = ""
     openai_model: str = "gpt-5.4-mini"
-    # Fast, cheap model used only to clean/correct the user's query before retrieval.
-    query_rewrite_model: str = "gpt-5.4-mini"
-    query_rewrite_enabled: bool = True
-    # LLM routing: decides content/ticket intents from message + conversation context.
-    chat_understanding_enabled: bool = True
-    chat_understanding_model: str = "gpt-5.4-mini"
-    # Skip the understanding LLM on high-confidence local routing (saves ~1–3s/turn).
-    chat_understanding_fast_path: bool = True
-    # Overlap KB retrieval with the understanding LLM when fast path is uncertain.
-    chat_speculative_retrieval: bool = True
-    chat_understanding_history_turns: int = 6
+    # Max LLM tool-calling rounds per chat turn before forcing a final text answer.
+    chat_tool_max_rounds: int = 4
     # Cache editable bot prompt/settings in-process (seconds per worker).
     bot_settings_cache_ttl: int = 60
     jwt_secret: str = "dev-secret-change-me"

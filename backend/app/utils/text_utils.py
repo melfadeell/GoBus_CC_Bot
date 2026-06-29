@@ -37,6 +37,72 @@ def normalize_arabic(text: str | None) -> str:
     return text.strip().lower()
 
 
+# Arabic letter → Latin (Egyptian-style) romanization for matching English /
+# Franco-Arabic spellings of place names against the Arabic names stored in the DB
+# (e.g. "Gesr El Suez" ↔ "جسر السويس"). This is deliberately phonetic, not a
+# scholarly transliteration — it only needs to be close enough for fuzzy matching.
+_ARABIC_ROMAN_MAP = {
+    "ء": "", "ٱ": "a", "آ": "a", "أ": "a", "إ": "a", "ا": "a",
+    "ب": "b", "ت": "t", "ة": "a", "ث": "s", "ج": "g", "ح": "h",
+    "خ": "kh", "د": "d", "ذ": "z", "ر": "r", "ز": "z", "س": "s",
+    "ش": "sh", "ص": "s", "ض": "d", "ط": "t", "ظ": "z", "ع": "a",
+    "غ": "gh", "ف": "f", "ق": "k", "ك": "k", "ل": "l", "م": "m",
+    "ن": "n", "ه": "h", "و": "w", "ي": "y", "ى": "a", "ئ": "y", "ؤ": "w",
+    "ـ": "",
+}
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def romanize_arabic(text: str | None) -> str:
+    """Transliterate Arabic text to a lowercase Latin approximation.
+
+    Latin characters already present pass through unchanged. The result is meant
+    for fuzzy comparison (see ``romanized_key``), not for display.
+    """
+    if not text:
+        return ""
+    text = _ARABIC_DIACRITICS_RE.sub("", text)
+    text = text.translate(_ARABIC_DIGITS)
+    out: list[str] = []
+    for ch in text:
+        if ch in _ARABIC_ROMAN_MAP:
+            out.append(_ARABIC_ROMAN_MAP[ch])
+        elif ch.isalnum():
+            out.append(ch.lower())
+        else:
+            out.append(" ")
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
+# Articles/fillers that appear detached in English ("El Suez") but glued in the
+# Arabic romanization ("alswys"); dropping them aligns the two spellings.
+_ROMAN_FILLER_TOKENS = {"el", "al", "the", "a", "an", "of"}
+
+
+def romanized_key(text: str | None) -> str:
+    """A compact, article-free key from (possibly Arabic) text for fuzzy matching.
+
+    Romanizes, splits to tokens, strips definite articles (detached *and* the
+    glued ``al-`` prefix), and concatenates — so "Gesr El Suez" and the
+    romanized "gsr alswys" both reduce to comparable keys.
+    """
+    roman = romanize_arabic(text)
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for tok in re.findall(r"[a-z0-9]+", roman):
+        if tok in _ROMAN_FILLER_TOKENS:
+            continue
+        if tok.startswith("al") and len(tok) > 4:
+            tok = tok[2:]
+        # De-dup: callers often pass overlapping terms (a full phrase plus its
+        # individual words), which would otherwise inflate the key and skew scores.
+        if tok in seen:
+            continue
+        seen.add(tok)
+        tokens.append(tok)
+    return "".join(tokens)
+
+
 def slugify(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
