@@ -8,7 +8,7 @@ import TripsTable from './TripsTable'
 import TicketForm from './TicketForm'
 import TicketCardList from './TicketCardList'
 import type { StationCardData, TripRow } from '@/hooks/useChatStream'
-import type { TicketDraft, TicketSummary } from '@/api/client'
+import { resolveMediaUrl, type TicketDraft, type TicketSummary } from '@/api/client'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
 interface MessageBubbleProps {
@@ -199,7 +199,7 @@ export default function MessageBubble({ role, content, isTyping, imageUrl, sql, 
             <>
               {imageUrl && (
                 <img
-                  src={imageUrl}
+                  src={resolveMediaUrl(imageUrl)}
                   alt=""
                   className="chat-message-image mb-2 rounded-lg max-w-full max-h-48 object-contain"
                 />

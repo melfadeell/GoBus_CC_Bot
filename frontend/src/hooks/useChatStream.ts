@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { getCustomerToken, type TicketDraft, type TicketSummary } from '@/api/client'
+import { apiUrl, getCustomerToken, type TicketDraft, type TicketSummary } from '@/api/client'
 
 export interface StationCardData {
   name: string
@@ -105,7 +105,7 @@ export async function uploadChatImage(file: File): Promise<string> {
   const form = new FormData()
   form.append('file', file)
 
-  const res = await fetch('/api/chat/upload-image', { method: 'POST', body: form })
+  const res = await fetch(apiUrl('/api/chat/upload-image'), { method: 'POST', body: form })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Upload failed' }))
     throw new Error(formatApiError(err.detail))
@@ -119,7 +119,7 @@ export async function ocrImage(file: File): Promise<string> {
   const form = new FormData()
   form.append('file', file)
 
-  const res = await fetch('/api/chat/ocr', { method: 'POST', body: form })
+  const res = await fetch(apiUrl('/api/chat/ocr'), { method: 'POST', body: form })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'OCR failed' }))
     throw new Error(formatApiError(err.detail))
@@ -183,7 +183,7 @@ export function useChatStream() {
         const customerToken = getCustomerToken()
         if (customerToken) streamHeaders.Authorization = `Bearer ${customerToken}`
 
-        const res = await fetch('/api/chat/stream', {
+        const res = await fetch(apiUrl('/api/chat/stream'), {
           method: 'POST',
           headers: streamHeaders,
           body: JSON.stringify(body),

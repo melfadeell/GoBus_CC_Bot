@@ -2,6 +2,25 @@ import { defaultValidationMessages, formatValidationDetail } from './validationE
 
 export { formatValidationDetail, type ValidationMessages } from './validationErrors'
 
+// Base origin of the backend API. In dev this is empty so requests stay relative
+// (`/api/...`) and go through the Vite proxy. In production set VITE_API_BASE_URL
+// to the backend origin (e.g. https://gobus-ai-assistant-backend.goai247.com).
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+
+/** Prefix an `/api/...` path with the configured backend origin. */
+export function apiUrl(path: string): string {
+  return `${API_BASE_URL}${path}`
+}
+
+/** Resolve a media URL for rendering (e.g. an <img> src). Absolute URLs
+ *  (http/https) and local previews (blob:/data:) are returned untouched;
+ *  backend-relative paths like `/api/chat/attachments/x.jpg` get the API origin. */
+export function resolveMediaUrl(url?: string | null): string | undefined {
+  if (!url) return undefined
+  if (/^(https?:|blob:|data:)/i.test(url)) return url
+  return apiUrl(url)
+}
+
 const TOKEN_KEY = 'gobus_admin_token'
 const CUSTOMER_TOKEN_KEY = 'gobus_customer_token'
 
@@ -37,7 +56,7 @@ export function setRuntimeHotline(h: string) {
   if (h) runtimeHotline = h
 }
 export async function fetchPublicInfo(): Promise<{ greeting: string; hotline: string }> {
-  const res = await fetch('/api/bot-settings/public/info')
+  const res = await fetch(apiUrl('/api/bot-settings/public/info'))
   if (!res.ok) throw new Error('Failed to load bot info')
   const data = (await res.json()) as { greeting: string; hotline: string }
   if (data.hotline) setRuntimeHotline(data.hotline)
@@ -66,7 +85,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (token) headers.Authorization = `Bearer ${token}`
 
-  const res = await fetch(path, { ...options, headers })
+  const res = await fetch(apiUrl(path), { ...options, headers })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     if (res.status === 401 && token && !path.includes('/auth/login')) {
@@ -120,7 +139,7 @@ export const api = {
     const form = new FormData()
     form.append('file', file)
     const token = getToken()
-    const res = await fetch('/api/kb/extract-file', {
+    const res = await fetch(apiUrl('/api/kb/extract-file'), {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
@@ -266,7 +285,7 @@ async function customerRequest<T>(path: string, options: RequestInit = {}): Prom
     ...(options.headers as Record<string, string>),
   }
   if (token) headers.Authorization = `Bearer ${token}`
-  const res = await fetch(path, { ...options, headers })
+  const res = await fetch(apiUrl(path), { ...options, headers })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     if (res.status === 401 && token) clearCustomerToken()

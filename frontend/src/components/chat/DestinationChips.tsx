@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { MapPin } from 'lucide-react'
 import StationCardList from './StationCard'
+import { apiUrl } from '@/api/client'
 import type { StationCardData } from '@/hooks/useChatStream'
 import { useLanguage } from '@/i18n/LanguageProvider'
 
@@ -30,7 +31,7 @@ export default function DestinationChips({ destinations }: DestinationChipsProps
 
     try {
       const res = await fetch(
-        `/api/chat/destination-stations?destination=${encodeURIComponent(dest)}`
+        apiUrl(`/api/chat/destination-stations?destination=${encodeURIComponent(dest)}`)
       )
       if (!res.ok) throw new Error('fetch failed')
       const data = (await res.json()) as { stations?: StationCardData[] }
